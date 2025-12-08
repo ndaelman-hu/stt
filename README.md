@@ -7,7 +7,7 @@ A simple yet powerful speech-to-text (STT) application that records audio and tr
 - Record audio from your microphone with manual or timed recording
 - Transcribe recorded audio or existing audio files
 - Support for multiple audio formats (WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4)
-- Multiple language support
+- Multiple language support (automatically transcribes speech from any supported language into English text)
 - GPU acceleration support (CUDA)
 - Interactive CLI interface
 - Automatic cleanup of temporary files
