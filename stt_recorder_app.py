@@ -107,14 +107,33 @@ class STTRecorderApp:
                 )
 
                 stream.start()
-                input()  # Wait for Enter key
+
+                # Wait for either user input OR automatic stop due to buffer full
+                # Use threading to avoid blocking when buffer fills up
+                user_stopped = threading.Event()
+
+                def wait_for_input():
+                    input()  # Wait for Enter key
+                    user_stopped.set()
+
+                input_thread = threading.Thread(target=wait_for_input, daemon=True)
+                input_thread.start()
+
+                # Monitor recording status - exit if buffer fills OR user presses Enter
+                while self.is_recording and not user_stopped.is_set():
+                    time.sleep(0.1)  # Check every 100ms
+
                 self.is_recording = False
                 stream.stop()
                 stream.close()
 
                 # Trim buffer to actual recorded size
                 audio_data = audio_buffer[:buffer_position]
-                print("Recording stopped!")
+
+                if buffer_full_warning_shown:
+                    print("Recording stopped (buffer limit reached). Processing transcription...")
+                else:
+                    print("Recording stopped!")
 
             # Validate we have audio data before saving
             if audio_data is None or len(audio_data) == 0:
