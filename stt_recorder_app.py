@@ -9,20 +9,26 @@ from datetime import datetime
 from pathlib import Path
 
 class STTRecorderApp:
-    def __init__(self, model_size="base", sample_rate=16000, device="cpu"):
+    def __init__(self, model_size="base", sample_rate=16000, device="cpu", max_recording_minutes=60):
         """
         Initialize the STT Recorder App
-        
+
         Args:
             model_size: Whisper model size (tiny, base, small, medium, large)
             sample_rate: Audio sample rate in Hz
             device: "cpu" or "cuda" for GPU acceleration
+            max_recording_minutes: Maximum recording duration to prevent memory issues (default: 60 minutes)
         """
         print(f"Loading Whisper model '{model_size}' on {device}...")
         self.model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
         self.sample_rate = sample_rate
         self.is_recording = False
         self.audio_data = []
+
+        # Calculate maximum buffer size to prevent unbounded memory growth
+        # At 16kHz sample rate, float32 (4 bytes): ~3.84 MB per minute
+        self.max_recording_minutes = max_recording_minutes
+        self.max_audio_samples = int(sample_rate * 60 * max_recording_minutes)
         
     def list_audio_devices(self):
         """List available audio input devices"""
@@ -32,23 +38,24 @@ class STTRecorderApp:
     def record_audio(self, duration=None, device=None):
         """
         Record audio for specified duration or until stopped
-        
+
         Args:
             duration: Recording duration in seconds (None for manual stop)
             device: Audio device index (None for default)
-            
+
         Returns:
             Path to temporary audio file
         """
         # Create temporary file
         temp_file = tempfile.NamedTemporaryFile(
-            suffix='.wav', 
+            suffix='.wav',
             delete=False,
             prefix=f'recording_{datetime.now().strftime("%Y%m%d_%H%M%S")}_'
         )
         temp_path = temp_file.name
         temp_file.close()
-        
+
+        audio_data = None
         try:
             if duration:
                 print(f"Recording for {duration} seconds...")
@@ -62,15 +69,26 @@ class STTRecorderApp:
                 sd.wait()  # Wait until recording is finished
                 print("Recording finished!")
             else:
-                print("Recording... Press Enter to stop.")
+                print(f"Recording... Press Enter to stop (max {self.max_recording_minutes} minutes).")
                 self.is_recording = True
                 self.audio_data = []
-                
+                buffer_full_warning_shown = False
+
                 # Start recording in background
                 def record_callback(indata, frames, time, status):
+                    nonlocal buffer_full_warning_shown
                     if self.is_recording:
+                        # Check buffer size to prevent unbounded memory growth
+                        current_samples = len(self.audio_data)
+                        if current_samples + len(indata) > self.max_audio_samples:
+                            if not buffer_full_warning_shown:
+                                print(f"\nWarning: Maximum recording duration ({self.max_recording_minutes} minutes) reached!")
+                                print("Recording will stop automatically to prevent memory issues.")
+                                buffer_full_warning_shown = True
+                            self.is_recording = False
+                            return
                         self.audio_data.extend(indata.copy())
-                
+
                 stream = sd.InputStream(
                     callback=record_callback,
                     samplerate=self.sample_rate,
@@ -78,45 +96,73 @@ class STTRecorderApp:
                     device=device,
                     dtype='float32'
                 )
-                
+
                 stream.start()
                 input()  # Wait for Enter key
                 self.is_recording = False
                 stream.stop()
                 stream.close()
-                
+
                 audio_data = self.audio_data
                 print("Recording stopped!")
-            
+
+            # Validate we have audio data before saving
+            if audio_data is None or len(audio_data) == 0:
+                raise ValueError("No audio data recorded")
+
             # Save to temporary file
             sf.write(temp_path, audio_data, self.sample_rate)
             print(f"Audio saved to: {temp_path}")
             return temp_path
-            
-        except Exception as e:
-            # Clean up on error
+
+        except KeyboardInterrupt:
+            # Handle Ctrl+C gracefully
+            print("\nRecording cancelled by user")
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-            raise e
+            raise
+
+        except Exception as e:
+            # Clean up temp file on any error
+            print(f"Error during recording: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                    print(f"Cleaned up temporary file: {temp_path}")
+                except OSError:
+                    pass  # File may not exist or already deleted
+            raise
     
     def transcribe_file(self, audio_path, language="en"):
         """
         Transcribe audio file
-        
+
         Args:
             audio_path: Path to audio file
             language: Language code (en, es, fr, etc.)
-            
+
         Returns:
             Dictionary with transcription results
         """
+        import gc
+
         print("Transcribing audio...")
         segments, info = self.model.transcribe(audio_path, language=language)
-        
-        # Convert segments generator to list and extract text
-        segments_list = list(segments)
-        full_text = " ".join([segment.text for segment in segments_list]).strip()
-        
+
+        # Process segments incrementally to avoid memory issues with long audio files
+        # DO NOT convert generator to list with list(segments) - causes memory leak!
+        full_text = ""
+        segments_list = []
+
+        for segment in segments:
+            full_text += segment.text + " "
+            segments_list.append(segment)
+
+        full_text = full_text.strip()
+
+        # Force garbage collection to release PyAV audio decoding buffers
+        gc.collect()
+
         return {
             'text': full_text,
             'language': info.language,
