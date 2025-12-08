@@ -1,6 +1,7 @@
 from faster_whisper import WhisperModel
 import sounddevice as sd
 import soundfile as sf
+import numpy as np
 import os
 import tempfile
 import time
@@ -71,23 +72,31 @@ class STTRecorderApp:
             else:
                 print(f"Recording... Press Enter to stop (max {self.max_recording_minutes} minutes).")
                 self.is_recording = True
-                self.audio_data = []
+
+                # Pre-allocate buffer for maximum recording duration
+                # This avoids memory reallocation and extend() calls during recording
+                audio_buffer = np.zeros((self.max_audio_samples, 1), dtype='float32')
+                buffer_position = 0
                 buffer_full_warning_shown = False
 
                 # Start recording in background
                 def record_callback(indata, frames, time, status):
-                    nonlocal buffer_full_warning_shown
+                    nonlocal buffer_position, buffer_full_warning_shown
                     if self.is_recording:
-                        # Check buffer size to prevent unbounded memory growth
-                        current_samples = len(self.audio_data)
-                        if current_samples + len(indata) > self.max_audio_samples:
+                        frames_to_write = len(indata)
+
+                        # Check if buffer has space
+                        if buffer_position + frames_to_write > self.max_audio_samples:
                             if not buffer_full_warning_shown:
                                 print(f"\nWarning: Maximum recording duration ({self.max_recording_minutes} minutes) reached!")
                                 print("Recording will stop automatically to prevent memory issues.")
                                 buffer_full_warning_shown = True
                             self.is_recording = False
                             return
-                        self.audio_data.extend(indata.copy())
+
+                        # Write directly into pre-allocated array (no reallocation needed)
+                        audio_buffer[buffer_position:buffer_position + frames_to_write] = indata
+                        buffer_position += frames_to_write
 
                 stream = sd.InputStream(
                     callback=record_callback,
@@ -103,7 +112,8 @@ class STTRecorderApp:
                 stream.stop()
                 stream.close()
 
-                audio_data = self.audio_data
+                # Trim buffer to actual recorded size
+                audio_data = audio_buffer[:buffer_position]
                 print("Recording stopped!")
 
             # Validate we have audio data before saving
