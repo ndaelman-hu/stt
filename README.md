@@ -12,6 +12,27 @@ A simple yet powerful speech-to-text (STT) application that records audio and tr
 - Interactive CLI interface
 - Automatic cleanup of temporary files
 
+### Supported Audio Formats
+
+- WAV (.wav)
+- MP3 (.mp3)
+- M4A (.m4a)
+- FLAC (.flac)
+- OGG (.ogg)
+- Opus (.opus)
+- WebM (.webm)
+- MP4 (.mp4)
+
+### Available Model Sizes
+
+The Whisper model comes in different sizes. Choose based on your needs:
+
+- `tiny` - Fastest, least accurate (~1GB VRAM)
+- `base` - Good balance (default) (~1GB VRAM)
+- `small` - Better accuracy (~2GB VRAM)
+- `medium` - High accuracy (~5GB VRAM)
+- `large` - Best accuracy (~10GB VRAM)
+
 ## Requirements
 
 - Python 3.8 or higher
@@ -75,34 +96,10 @@ print(result['text'])
 # Transcribe an existing file
 result = app.transcribe_existing_file("path/to/audio.wav")
 print(result['text'])
-```
 
-### Model Sizes
-
-The Whisper model comes in different sizes. Choose based on your needs:
-
-- `tiny` - Fastest, least accurate (~1GB VRAM)
-- `base` - Good balance (default) (~1GB VRAM)
-- `small` - Better accuracy (~2GB VRAM)
-- `medium` - High accuracy (~5GB VRAM)
-- `large` - Best accuracy (~10GB VRAM)
-
-Example with a different model:
-
-```python
+# Use a different model size
 app = STTRecorderApp(model_size="small", device="cuda")
 ```
-
-## Supported Audio Formats
-
-- WAV (.wav)
-- MP3 (.mp3)
-- M4A (.m4a)
-- FLAC (.flac)
-- OGG (.ogg)
-- Opus (.opus)
-- WebM (.webm)
-- MP4 (.mp4)
 
 ## Troubleshooting
 
