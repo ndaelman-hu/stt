@@ -33,35 +33,6 @@ The Whisper model comes in different sizes. Choose based on your needs:
 - `medium` - High accuracy (~5GB VRAM)
 - `large` - Best accuracy (~10GB VRAM)
 
-## Requirements
-
-- Python 3.8 or higher
-- A working microphone for recording
-- (Optional) NVIDIA GPU with CUDA for faster transcription
-
-## Installation
-
-```bash
-# Clone or download this repository
-git clone <repository-url>
-cd whisper
-
-# Create a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install faster-whisper sounddevice soundfile
-```
-
-### Optional: GPU Support
-
-For GPU acceleration, install PyTorch with CUDA support:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu118
-```
-
 ## Usage
 
 ### Interactive Mode
@@ -99,6 +70,37 @@ print(result['text'])
 
 # Use a different model size
 app = STTRecorderApp(model_size="small", device="cuda")
+```
+
+## Installation
+
+### Requirements
+
+- Python 3.8 or higher
+- A working microphone for recording
+- (Optional) NVIDIA GPU with CUDA for faster transcription
+
+### Standard Setup
+
+```bash
+# Clone or download this repository
+git clone <repository-url>
+cd whisper
+
+# Create a virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install faster-whisper sounddevice soundfile
+```
+
+### Optional: GPU Support
+
+For GPU acceleration, install PyTorch with CUDA support:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ## Troubleshooting
