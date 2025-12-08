@@ -20,23 +20,16 @@ A simple yet powerful speech-to-text (STT) application that records audio and tr
 
 ## Installation
 
-### 1. Clone or download this repository
-
 ```bash
+# Clone or download this repository
 git clone <repository-url>
 cd whisper
-```
 
-### 2. Create a virtual environment (recommended)
-
-```bash
+# Create a virtual environment (recommended)
 python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
 
-### 3. Install dependencies
-
-```bash
+# Install dependencies
 pip install faster-whisper sounddevice soundfile
 ```
 
