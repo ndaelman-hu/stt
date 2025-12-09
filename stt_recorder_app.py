@@ -27,7 +27,7 @@ class STTRecorderApp:
         self.audio_data = []
 
         # Calculate maximum buffer size to prevent unbounded memory growth
-        # At 16kHz sample rate, float32 (4 bytes): ~3.84 MB per minute
+        # At 16kHz sample rate, float32 (4 bytes): ~3.66 MiB / min
         self.max_recording_minutes = max_recording_minutes
         self.max_audio_samples = int(sample_rate * 60 * max_recording_minutes)
         
@@ -70,7 +70,7 @@ class STTRecorderApp:
                 sd.wait()  # Wait until recording is finished
                 print("Recording finished!")
             else:
-                print(f"Recording... Press Enter to stop (max {self.max_recording_minutes} minutes).")
+                print(f"Recording... (Ctrl+C to stop early, or auto-stop at {self.max_recording_minutes} min)")
                 self.is_recording = True
 
                 # Pre-allocate buffer for maximum recording duration
@@ -88,8 +88,7 @@ class STTRecorderApp:
                         # Check if buffer has space
                         if buffer_position + frames_to_write > self.max_audio_samples:
                             if not buffer_full_warning_shown:
-                                print(f"\nWarning: Maximum recording duration ({self.max_recording_minutes} minutes) reached!")
-                                print("Recording will stop automatically to prevent memory issues.")
+                                print(f"\nMaximum recording duration reached. Proceeding to transcription...")
                                 buffer_full_warning_shown = True
                             self.is_recording = False
                             return
@@ -108,20 +107,13 @@ class STTRecorderApp:
 
                 stream.start()
 
-                # Wait for either user input OR automatic stop due to buffer full
-                # Use threading to avoid blocking when buffer fills up
-                user_stopped = threading.Event()
-
-                def wait_for_input():
-                    input()  # Wait for Enter key
-                    user_stopped.set()
-
-                input_thread = threading.Thread(target=wait_for_input, daemon=True)
-                input_thread.start()
-
-                # Monitor recording status - exit if buffer fills OR user presses Enter
-                while self.is_recording and not user_stopped.is_set():
-                    time.sleep(0.1)  # Check every 100ms
+                try:
+                    # Monitor recording status - exit when buffer fills
+                    while self.is_recording:
+                        time.sleep(0.1)  # Check every 100ms
+                except KeyboardInterrupt:
+                    # User pressed Ctrl+C to stop early
+                    print("\nRecording stopped by user.")
 
                 self.is_recording = False
                 stream.stop()
@@ -129,11 +121,6 @@ class STTRecorderApp:
 
                 # Trim buffer to actual recorded size
                 audio_data = audio_buffer[:buffer_position]
-
-                if buffer_full_warning_shown:
-                    print("Recording stopped (buffer limit reached). Processing transcription...")
-                else:
-                    print("Recording stopped!")
 
             # Validate we have audio data before saving
             if audio_data is None or len(audio_data) == 0:
@@ -178,8 +165,8 @@ class STTRecorderApp:
         print("Transcribing audio...")
         segments, info = self.model.transcribe(audio_path, language=language)
 
-        # Process segments incrementally to avoid memory issues with long audio files
-        # DO NOT convert generator to list with list(segments) - causes memory leak!
+        # Process segments incrementally to reduce peak memory usage for long audio files
+        # Avoid list(segments) which loads all segments at once
         text_parts = []
         segments_list = []
 
