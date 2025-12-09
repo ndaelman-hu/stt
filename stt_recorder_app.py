@@ -188,12 +188,12 @@ class STTRecorderApp:
         print("Transcribing audio...")
         segments, info = self.model.transcribe(audio_path, language=language)
 
+        # Process segments incrementally to avoid memory issues with long audio files
+        # Only accumulate text strings, not full segment objects
         text_parts = []
-        segments_list = []
 
         for segment in segments:
             text_parts.append(segment.text)
-            segments_list.append(segment)
 
         full_text = " ".join(text_parts).strip()
 
@@ -203,7 +203,6 @@ class STTRecorderApp:
         return {
             'text': full_text,
             'language': info.language,
-            'segments': segments_list,
             'duration': info.duration
         }
     
