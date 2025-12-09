@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 class STTRecorderApp:
-    def __init__(self, model_size="base", sample_rate=16000, device="cpu", max_recording_minutes=60):
+    def __init__(self, model_size="base", sample_rate=16000, device="cpu", max_recording_minutes=90):
         """
         Initialize the STT Recorder App
 
@@ -18,7 +18,7 @@ class STTRecorderApp:
             model_size: Whisper model size (tiny, base, small, medium, large)
             sample_rate: Audio sample rate in Hz
             device: "cpu" or "cuda" for GPU acceleration
-            max_recording_minutes: Maximum recording duration to prevent memory issues (default: 60 minutes)
+            max_recording_minutes: Maximum recording duration to prevent memory issues
         """
         print(f"Loading Whisper model '{model_size}' on {device}...")
         self.model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")

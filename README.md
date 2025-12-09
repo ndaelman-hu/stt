@@ -71,14 +71,14 @@ print(result['text'])
 # Use a different model size
 app = STTRecorderApp(model_size="small", device="cuda")
 
-# Configure recording duration limit (default: 60 minutes)
+# Configure recording duration limit (default: 90 minutes)
 app = STTRecorderApp(max_recording_minutes=120)  # 2-hour limit
 ```
 
 ### Recording Behavior & Limits
 
 **Recording Duration Limits:**
-- Default maximum recording duration: **60 minutes**
+- Default maximum recording duration: **90 minutes**
 - Prevents memory issues with very long recordings
 - Configurable via `max_recording_minutes` parameter
 - When limit is reached, recording automatically proceeds to transcription
