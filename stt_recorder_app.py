@@ -141,7 +141,7 @@ class STTRecorderApp:
             # Validate we have audio data before saving
             if audio_data is None:
                 raise ValueError("No audio data object returned (recording failed or interrupted)")
-            if len(audio_data) == 0:
+            if audio_data.size == 0:
                 raise ValueError("Recorded audio is empty (zero length). Check device and settings.")
 
             # Save to temporary file
