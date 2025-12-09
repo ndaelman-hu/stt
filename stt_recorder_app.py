@@ -79,6 +79,7 @@ class STTRecorderApp:
                 buffer_position = 0
                 buffer_full_warning_shown = False
                 warning_lock = threading.Lock()  # Protects buffer_full_warning_shown flag
+                buffer_lock = threading.Lock()   # Protects buffer_position and buffer writes
 
                 # Start recording in background
                 # Note: sounddevice typically calls callbacks sequentially from a single audio thread,
@@ -88,19 +89,21 @@ class STTRecorderApp:
                     if self.is_recording:
                         frames_to_write = len(indata)
 
-                        # Check if buffer has space
-                        if buffer_position + frames_to_write > self.max_audio_samples:
-                            # Use lock to prevent race condition on warning flag
-                            with warning_lock:
-                                if not buffer_full_warning_shown:
-                                    print(f"\nMaximum recording duration reached. Proceeding to transcription...")
-                                    buffer_full_warning_shown = True
-                            self.is_recording = False
-                            return
+                        # Protect buffer operations from race with main thread
+                        with buffer_lock:
+                            # Check if buffer has space
+                            if buffer_position + frames_to_write > self.max_audio_samples:
+                                # Use lock to prevent race condition on warning flag
+                                with warning_lock:
+                                    if not buffer_full_warning_shown:
+                                        print(f"\nMaximum recording duration reached. Proceeding to transcription...")
+                                        buffer_full_warning_shown = True
+                                self.is_recording = False
+                                return
 
-                        # Write directly into pre-allocated array (no reallocation needed)
-                        audio_buffer[buffer_position:buffer_position + frames_to_write] = indata
-                        buffer_position += frames_to_write
+                            # Write directly into pre-allocated array (no reallocation needed)
+                            audio_buffer[buffer_position:buffer_position + frames_to_write] = indata
+                            buffer_position += frames_to_write
 
                 stream = sd.InputStream(
                     callback=record_callback,
@@ -125,7 +128,10 @@ class STTRecorderApp:
                 stream.close()
 
                 # Trim buffer to actual recorded size
-                audio_data = audio_buffer[:buffer_position]
+                # Lock to ensure we read the final buffer_position atomically
+                with buffer_lock:
+                    final_position = buffer_position
+                audio_data = audio_buffer[:final_position]
 
             # Validate we have audio data before saving
             if audio_data is None:
