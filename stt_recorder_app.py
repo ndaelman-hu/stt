@@ -67,8 +67,13 @@ class STTRecorderApp:
                     device=device,
                     dtype='float32'
                 )
-                sd.wait()  # Wait until recording is finished
-                print("Recording finished!")
+                try:
+                    sd.wait()  # Wait until recording is finished
+                    print("Recording finished!")
+                except KeyboardInterrupt:
+                    print("\nRecording interrupted by user during timed recording.")
+                    audio_data = None
+                    return None
             else:
                 print(f"Recording... (Ctrl+C to stop early, or auto-stop at {self.max_recording_minutes} min)")
                 self.is_recording = True
