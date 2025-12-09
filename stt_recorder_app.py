@@ -88,22 +88,27 @@ class STTRecorderApp:
                     nonlocal buffer_position, buffer_full_warning_shown
                     if self.is_recording:
                         frames_to_write = len(indata)
+                        buffer_full = False
 
                         # Protect buffer operations from race with main thread
+                        # Note: We avoid nested lock acquisition to prevent potential deadlocks
                         with buffer_lock:
                             # Check if buffer has space
                             if buffer_position + frames_to_write > self.max_audio_samples:
-                                # Use lock to prevent race condition on warning flag
-                                with warning_lock:
-                                    if not buffer_full_warning_shown:
-                                        print(f"\nMaximum recording duration reached. Proceeding to transcription...")
-                                        buffer_full_warning_shown = True
-                                self.is_recording = False
-                                return
+                                buffer_full = True
+                            else:
+                                # Write directly into pre-allocated array (no reallocation needed)
+                                audio_buffer[buffer_position:buffer_position + frames_to_write] = indata
+                                buffer_position += frames_to_write
 
-                            # Write directly into pre-allocated array (no reallocation needed)
-                            audio_buffer[buffer_position:buffer_position + frames_to_write] = indata
-                            buffer_position += frames_to_write
+                        # Handle buffer full condition outside buffer_lock to avoid nested locks
+                        if buffer_full:
+                            with warning_lock:
+                                if not buffer_full_warning_shown:
+                                    print(f"\nMaximum recording duration reached. Proceeding to transcription...")
+                                    buffer_full_warning_shown = True
+                            self.is_recording = False
+                            return
 
                 stream = sd.InputStream(
                     callback=record_callback,
