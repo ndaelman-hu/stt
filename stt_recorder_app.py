@@ -57,6 +57,7 @@ class STTRecorderApp:
         temp_file.close()
 
         audio_data = None
+        stream = None  # Track stream for cleanup in exception handlers
         try:
             if duration:
                 print(f"Recording for {duration} seconds...")
@@ -139,6 +140,7 @@ class STTRecorderApp:
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully
             print("\nRecording cancelled by user")
+            # Clean up temp file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             return None
@@ -153,6 +155,15 @@ class STTRecorderApp:
                 except OSError:
                     pass  # File may not exist or already deleted
             raise
+
+        finally:
+            # Always clean up stream if it was created
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except:
+                    pass  # Stream may already be stopped or not started
     
     def transcribe_file(self, audio_path, language="en"):
         """
