@@ -24,7 +24,6 @@ class STTRecorderApp:
         self.model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
         self.sample_rate = sample_rate
         self.is_recording = False
-        self.audio_data = []
 
         # Calculate maximum buffer size to prevent unbounded memory growth
         # At 16kHz sample rate, float32 (4 bytes): ~3.66 MiB / min
@@ -129,8 +128,10 @@ class STTRecorderApp:
                 audio_data = audio_buffer[:buffer_position]
 
             # Validate we have audio data before saving
-            if audio_data is None or len(audio_data) == 0:
-                raise ValueError("No audio data recorded")
+            if audio_data is None:
+                raise ValueError("No audio data object returned (recording failed or interrupted)")
+            if len(audio_data) == 0:
+                raise ValueError("Recorded audio is empty (zero length). Check device and settings.")
 
             # Save to temporary file
             sf.write(temp_path, audio_data, self.sample_rate)
