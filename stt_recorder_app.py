@@ -24,7 +24,6 @@ class STTRecorderApp:
         self.model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
         self.sample_rate = sample_rate
         self.is_recording = False
-        self.audio_data = []
 
         # Calculate maximum buffer size to prevent unbounded memory growth
         # At 16kHz sample rate, float32 (4 bytes): ~3.66 MiB / min
