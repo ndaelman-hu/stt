@@ -78,8 +78,11 @@ class STTRecorderApp:
                 audio_buffer = np.zeros((self.max_audio_samples, 1), dtype='float32')
                 buffer_position = 0
                 buffer_full_warning_shown = False
+                warning_lock = threading.Lock()  # Protects buffer_full_warning_shown flag
 
                 # Start recording in background
+                # Note: sounddevice typically calls callbacks sequentially from a single audio thread,
+                # but we use locks for formal thread safety as defensive programming
                 def record_callback(indata, frames, time, status):
                     nonlocal buffer_position, buffer_full_warning_shown
                     if self.is_recording:
@@ -87,9 +90,11 @@ class STTRecorderApp:
 
                         # Check if buffer has space
                         if buffer_position + frames_to_write > self.max_audio_samples:
-                            if not buffer_full_warning_shown:
-                                print(f"\nMaximum recording duration reached. Proceeding to transcription...")
-                                buffer_full_warning_shown = True
+                            # Use lock to prevent race condition on warning flag
+                            with warning_lock:
+                                if not buffer_full_warning_shown:
+                                    print(f"\nMaximum recording duration reached. Proceeding to transcription...")
+                                    buffer_full_warning_shown = True
                             self.is_recording = False
                             return
 
