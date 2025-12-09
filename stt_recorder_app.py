@@ -149,14 +149,6 @@ class STTRecorderApp:
             print(f"Audio saved to: {temp_path}")
             return temp_path
 
-        except KeyboardInterrupt:
-            # Handle Ctrl+C gracefully
-            print("\nRecording cancelled by user")
-            # Clean up temp file
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-            return None
-
         except Exception as e:
             # Clean up temp file on any error
             print(f"Error during recording: {e}")
