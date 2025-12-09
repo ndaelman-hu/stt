@@ -136,7 +136,7 @@ class STTRecorderApp:
             print("\nRecording cancelled by user")
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-            raise
+            return None
 
         except Exception as e:
             # Clean up temp file on any error
