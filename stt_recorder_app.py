@@ -180,14 +180,14 @@ class STTRecorderApp:
 
         # Process segments incrementally to avoid memory issues with long audio files
         # DO NOT convert generator to list with list(segments) - causes memory leak!
-        full_text = ""
+        text_parts = []
         segments_list = []
 
         for segment in segments:
-            full_text += segment.text + " "
+            text_parts.append(segment.text)
             segments_list.append(segment)
 
-        full_text = full_text.strip()
+        full_text = " ".join(text_parts).strip()
 
         # Force garbage collection to release PyAV audio decoding buffers
         gc.collect()
