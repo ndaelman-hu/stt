@@ -162,7 +162,7 @@ class STTRecorderApp:
                 try:
                     stream.stop()
                     stream.close()
-                except:
+                except Exception:
                     pass  # Stream may already be stopped or not started
     
     def transcribe_file(self, audio_path, language="en"):
@@ -181,8 +181,6 @@ class STTRecorderApp:
         print("Transcribing audio...")
         segments, info = self.model.transcribe(audio_path, language=language)
 
-        # Process segments incrementally to reduce peak memory usage for long audio files
-        # Avoid list(segments) which loads all segments at once
         text_parts = []
         segments_list = []
 
