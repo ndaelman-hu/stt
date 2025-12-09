@@ -60,7 +60,7 @@ from stt_recorder_app import STTRecorderApp
 # Initialize the app
 app = STTRecorderApp(model_size="base", device="cpu")
 
-# Record and transcribe (press Enter to stop recording)
+# Record and transcribe (press Ctrl+C to stop recording)
 result = app.record_and_transcribe()
 print(result['text'])
 
@@ -70,7 +70,39 @@ print(result['text'])
 
 # Use a different model size
 app = STTRecorderApp(model_size="small", device="cuda")
+
+# Configure recording duration limit (default: 90 minutes)
+app = STTRecorderApp(max_recording_minutes=120)  # 2-hour limit
 ```
+
+### Recording Behavior & Limits
+
+**Recording Duration Limits:**
+- Default maximum recording duration: **90 minutes**
+- Prevents memory issues with very long recordings
+- Configurable via `max_recording_minutes` parameter
+- When limit is reached, recording automatically proceeds to transcription
+
+**Stopping Recordings:**
+- **Manual stop:** Press `Ctrl+C` during recording
+- **Automatic stop:** Recording stops when duration limit is reached
+- **Partial recordings:** Ctrl+C saves whatever has been recorded (not discarded)
+- Both manual and automatic stops preserve the recorded audio
+
+**Result Dictionary:**
+```python
+result = {
+    'text': str,        # Transcribed text
+    'language': str,    # Detected language code
+    'duration': float   # Audio duration in seconds
+}
+```
+
+**Memory Optimization:**
+- Optimized for multi-hour recordings
+- Pre-allocated buffers for efficient memory usage
+- Incremental transcription processing
+- Suitable for long-form content like lectures or meetings
 
 ## Installation
 
