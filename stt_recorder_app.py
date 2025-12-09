@@ -128,8 +128,10 @@ class STTRecorderApp:
                 audio_data = audio_buffer[:buffer_position]
 
             # Validate we have audio data before saving
-            if audio_data is None or len(audio_data) == 0:
-                raise ValueError("No audio data recorded")
+            if audio_data is None:
+                raise ValueError("No audio data object returned (recording failed or interrupted)")
+            if len(audio_data) == 0:
+                raise ValueError("Recorded audio is empty (zero length). Check device and settings.")
 
             # Save to temporary file
             sf.write(temp_path, audio_data, self.sample_rate)
