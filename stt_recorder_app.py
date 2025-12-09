@@ -87,6 +87,11 @@ class STTRecorderApp:
 
                         # Check if buffer has space
                         if buffer_position + frames_to_write > self.max_audio_samples:
+                            # Only add what fits
+                            remaining = self.max_audio_samples - buffer_position
+                            if remaining > 0:
+                                audio_buffer[buffer_position:buffer_position + remaining] = indata[:remaining]
+                                buffer_position += remaining
                             if not buffer_full_warning_shown:
                                 print(f"\nWarning: Maximum recording duration ({self.max_recording_minutes} minutes) reached!")
                                 print("Recording will stop automatically to prevent memory issues.")
