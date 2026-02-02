@@ -4,13 +4,16 @@ A simple yet powerful speech-to-text (STT) application that records audio and tr
 
 ## Features
 
-- Record audio from your microphone with manual or timed recording
-- Transcribe recorded audio or existing audio files
-- Support for multiple audio formats (WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4)
-- Multiple language support (automatically transcribes speech from any supported language into English text)
-- GPU acceleration support (CUDA)
-- Interactive CLI interface
-- Automatic cleanup of temporary files
+- **Flexible configuration** via `.env` file - no code changes needed
+- **Record audio** from your microphone with manual or timed recording
+- **Configurable stop signals** - use Ctrl+C, Enter, or Space to stop recording
+- **Transcribe** recorded audio or existing audio files
+- **Translation mode** - transcribe, translate to English, or both
+- **Multiple audio formats** - WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4
+- **Multiple language support** - auto-detect or specify language
+- **GPU acceleration** - CUDA support for faster transcription
+- **Interactive CLI** - easy-to-use menu interface
+- **Automatic cleanup** - optionally keep or delete recordings
 
 ### Supported Audio Formats
 
@@ -32,6 +35,53 @@ The Whisper model comes in different sizes. Choose based on your needs:
 - `small` - Better accuracy (~2GB VRAM)
 - `medium` - High accuracy (~5GB VRAM)
 - `large` - Best accuracy (~10GB VRAM)
+
+## Configuration
+
+The application is configured using a `.env` file. Create one from the example:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` to customize settings:
+
+```env
+# Model settings
+MODEL_SIZE=base        # Options: tiny, base, small, medium, large
+DEVICE=auto           # Options: auto, cpu, cuda
+
+# Recording settings
+SAMPLE_RATE=16000
+MAX_DURATION_MINUTES=90
+STOP_SIGNAL=ctrl_c    # Options: ctrl_c, enter, space
+
+# Transcription settings
+LANGUAGE=en           # Language code or 'auto'
+TASK=transcribe       # Options: transcribe, translate, both
+
+# File management
+KEEP_RECORDINGS=false
+```
+
+### Configuration Options
+
+**Model Size**: Choose based on accuracy vs. speed tradeoff
+- `tiny` - Fastest, least accurate (~1GB VRAM)
+- `base` - Good balance (default)
+- `small` - Better accuracy (~2GB VRAM)
+- `medium` - High accuracy (~5GB VRAM)
+- `large` - Best accuracy (~10GB VRAM)
+
+**Stop Signal**: How to stop recording
+- `ctrl_c` - Press Ctrl+C to stop (default)
+- `enter` - Press Enter key to stop
+- `space` - Press Space bar to stop
+
+**Task**: What to do with the audio
+- `transcribe` - Keep original language
+- `translate` - Translate to English
+- `both` - Output both transcription and translation
 
 ## Usage
 
@@ -57,22 +107,24 @@ You can also use the `STTRecorderApp` class in your own Python scripts:
 ```python
 from stt_recorder_app import STTRecorderApp
 
-# Initialize the app
-app = STTRecorderApp(model_size="base", device="cpu")
+# Initialize with default .env configuration
+app = STTRecorderApp()
 
-# Record and transcribe (press Ctrl+C to stop recording)
+# Or specify a custom config file
+app = STTRecorderApp(config_path="/path/to/custom.env")
+
+# Record and transcribe (uses configured stop signal)
 result = app.record_and_transcribe()
 print(result['text'])
+
+# For task="both", result includes both fields:
+if 'translation' in result:
+    print(f"Original: {result['text']}")
+    print(f"English: {result['translation']}")
 
 # Transcribe an existing file
 result = app.transcribe_existing_file("path/to/audio.wav")
 print(result['text'])
-
-# Use a different model size
-app = STTRecorderApp(model_size="small", device="cuda")
-
-# Configure recording duration limit (default: 90 minutes)
-app = STTRecorderApp(max_recording_minutes=120)  # 2-hour limit
 ```
 
 ### Recording Behavior & Limits
@@ -84,10 +136,11 @@ app = STTRecorderApp(max_recording_minutes=120)  # 2-hour limit
 - When limit is reached, recording automatically proceeds to transcription
 
 **Stopping Recordings:**
-- **Manual stop:** Press `Ctrl+C` during recording
+- **Manual stop:** Press the configured stop signal (Ctrl+C, Enter, or Space)
 - **Automatic stop:** Recording stops when duration limit is reached
-- **Partial recordings:** Ctrl+C saves whatever has been recorded (not discarded)
+- **Partial recordings:** Manual stop saves whatever has been recorded (not discarded)
 - Both manual and automatic stops preserve the recorded audio
+- Configure stop signal in `.env` with `STOP_SIGNAL` setting
 
 **Result Dictionary:**
 ```python
@@ -112,6 +165,8 @@ result = {
 - A working microphone for recording
 - (Optional) NVIDIA GPU with CUDA for faster transcription
 
+**Windows Users**: See [WINDOWS_DEPLOYMENT.md](WINDOWS_DEPLOYMENT.md) for detailed Windows-specific installation instructions.
+
 ### Standard Setup
 
 ```bash
@@ -124,7 +179,11 @@ python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install faster-whisper sounddevice soundfile
+pip install -r requirements.txt
+
+# Create configuration file
+cp .env.example .env
+# Edit .env to customize settings
 ```
 
 ### Optional: GPU Support
