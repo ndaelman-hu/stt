@@ -6,11 +6,12 @@ import os
 import tempfile
 import time
 import threading
+import sys
+import select
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 from config import AppConfig, load_config, StopSignal, Task
-from pynput import keyboard
 
 class STTRecorderApp:
     def __init__(self, config_path: str = ".env"):
@@ -142,17 +143,34 @@ class STTRecorderApp:
                     dtype='float32'
                 )
 
-                # Set up keyboard listener for stop signal
-                def on_key_press(key):
-                    # Match against the configured stop key
-                    if stop_key != "ctrl_c" and key == stop_key:
-                        self.stop_requested.set()
-                        return False  # Stop listener
+                # Set up stdin listener for stop signal (only responds when terminal is focused)
+                def stdin_listener():
+                    """Monitor stdin for key presses - only works when terminal has focus"""
+                    if stop_key == "ctrl_c":
+                        return  # Ctrl+C handled via KeyboardInterrupt
 
-                listener = None
+                    try:
+                        while self.is_recording and not self.stop_requested.is_set():
+                            # Use select to check if input is available (non-blocking)
+                            # Timeout of 0.1 seconds to check recording status regularly
+                            if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                                char = sys.stdin.read(1)
+
+                                # Check for Enter key (newline)
+                                if stop_key == "enter" and char in ('\n', '\r'):
+                                    self.stop_requested.set()
+                                    break
+                                # Check for Space key
+                                elif stop_key == "space" and char == ' ':
+                                    self.stop_requested.set()
+                                    break
+                    except Exception:
+                        pass  # Silently handle any stdin errors
+
+                listener_thread = None
                 if stop_key != "ctrl_c":
-                    listener = keyboard.Listener(on_press=on_key_press)
-                    listener.start()
+                    listener_thread = threading.Thread(target=stdin_listener, daemon=True)
+                    listener_thread.start()
 
                 stream.start()
 
@@ -168,8 +186,9 @@ class STTRecorderApp:
                     print("\nRecording stopped by user.")
 
                 self.is_recording = False
-                if listener:
-                    listener.stop()
+                if listener_thread and listener_thread.is_alive():
+                    # Thread will exit on its own when is_recording becomes False
+                    listener_thread.join(timeout=0.5)
                 stream.stop()
                 stream.close()
 

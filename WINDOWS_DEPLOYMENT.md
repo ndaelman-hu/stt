@@ -44,7 +44,7 @@ You should see `(.venv)` in your command prompt.
 ### 4. Install Dependencies
 
 ```cmd
-pip install faster-whisper sounddevice soundfile pydantic pydantic-settings pynput
+pip install faster-whisper sounddevice soundfile pydantic pydantic-settings
 ```
 
 ### 5. Configure the Application
@@ -183,12 +183,6 @@ If CUDA is not detected:
 3. Reinstall PyTorch with CUDA support
 4. Set `DEVICE=cpu` in `.env` to use CPU instead
 
-### Permission Errors with pynput
-
-On Windows, `pynput` generally works without admin privileges. If you encounter issues:
-1. Run Command Prompt as Administrator
-2. Or use `STOP_SIGNAL=ctrl_c` which uses KeyboardInterrupt
-
 ### Installation Errors
 
 If pip installation fails:
@@ -197,7 +191,7 @@ If pip installation fails:
 python -m pip install --upgrade pip
 
 # Then retry installation
-pip install faster-whisper sounddevice soundfile pydantic pydantic-settings pynput
+pip install faster-whisper sounddevice soundfile pydantic pydantic-settings
 ```
 
 ### Audio Quality Issues

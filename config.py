@@ -2,8 +2,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from enum import Enum
-from typing import Union
-from pynput import keyboard
 
 
 class ModelSize(str, Enum):
@@ -28,19 +26,14 @@ class StopSignal(str, Enum):
     ENTER = "enter"
     SPACE = "space"
 
-    def get_key(self) -> Union[keyboard.Key, str]:
+    def get_key(self) -> str:
         """
-        Get the actual keyboard Key object for this stop signal
+        Get the key identifier for this stop signal
 
         Returns:
-            keyboard.Key object or "ctrl_c" string for KeyboardInterrupt handling
+            String identifier for the key ("ctrl_c", "enter", or "space")
         """
-        key_map = {
-            StopSignal.ENTER: keyboard.Key.enter,
-            StopSignal.SPACE: keyboard.Key.space,
-            StopSignal.CTRL_C: "ctrl_c",  # Special handling via KeyboardInterrupt
-        }
-        return key_map[self]
+        return self.value
 
 
 class Task(str, Enum):
