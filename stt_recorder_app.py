@@ -6,29 +6,40 @@ import os
 import tempfile
 import time
 import threading
+import sys
+import select
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Dict, Any
+from config import AppConfig, load_config, StopSignal, Task
 
 class STTRecorderApp:
-    def __init__(self, model_size="base", sample_rate=16000, device="cpu", max_recording_minutes=90):
+    def __init__(self, config_path: str = ".env"):
         """
         Initialize the STT Recorder App
 
         Args:
-            model_size: Whisper model size (tiny, base, small, medium, large)
-            sample_rate: Audio sample rate in Hz
-            device: "cpu" or "cuda" for GPU acceleration
-            max_recording_minutes: Maximum recording duration to prevent memory issues
+            config_path: Path to configuration file (relative or absolute).
+                        Relative paths are resolved from the current working directory.
+                        Example: ".env" or "/absolute/path/to/.env"
         """
+        # Load configuration
+        self.config = load_config(config_path)
+
+        # Get settings from config
+        model_size = self.config.model_size.value
+        device = self.config.get_device_string()
+        self.sample_rate = self.config.sample_rate
+        self.max_recording_minutes = self.config.max_duration_minutes
+
         print(f"Loading Whisper model '{model_size}' on {device}...")
         self.model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
-        self.sample_rate = sample_rate
         self.is_recording = False
+        self.stop_requested = threading.Event()
 
         # Calculate maximum buffer size to prevent unbounded memory growth
         # At 16kHz sample rate, float32 (4 bytes): ~3.66 MiB / min
-        self.max_recording_minutes = max_recording_minutes
-        self.max_audio_samples = int(sample_rate * 60 * max_recording_minutes)
+        self.max_audio_samples = int(self.sample_rate * 60 * self.max_recording_minutes)
         
     def list_audio_devices(self):
         """List available audio input devices"""
@@ -75,8 +86,17 @@ class STTRecorderApp:
                     audio_data = None
                     return None
             else:
-                print(f"Recording... (Ctrl+C to stop early, or auto-stop at {self.max_recording_minutes} min)")
+                # Get stop signal configuration and display message
+                stop_key = self.config.stop_signal.get_key()
+                stop_msg = {
+                    StopSignal.CTRL_C: "Ctrl+C",
+                    StopSignal.ENTER: "Enter",
+                    StopSignal.SPACE: "Space"
+                }.get(self.config.stop_signal, "configured key")
+
+                print(f"Recording... (Press {stop_msg} to stop, or auto-stop at {self.max_recording_minutes} min)")
                 self.is_recording = True
+                self.stop_requested.clear()
 
                 # Pre-allocate buffer for maximum recording duration
                 # This avoids memory reallocation and extend() calls during recording
@@ -123,17 +143,52 @@ class STTRecorderApp:
                     dtype='float32'
                 )
 
+                # Set up stdin listener for stop signal (only responds when terminal is focused)
+                def stdin_listener():
+                    """Monitor stdin for key presses - only works when terminal has focus"""
+                    if stop_key == "ctrl_c":
+                        return  # Ctrl+C handled via KeyboardInterrupt
+
+                    try:
+                        while self.is_recording and not self.stop_requested.is_set():
+                            # Use select to check if input is available (non-blocking)
+                            # Timeout of 0.1 seconds to check recording status regularly
+                            if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                                char = sys.stdin.read(1)
+
+                                # Check for Enter key (newline)
+                                if stop_key == "enter" and char in ('\n', '\r'):
+                                    self.stop_requested.set()
+                                    break
+                                # Check for Space key
+                                elif stop_key == "space" and char == ' ':
+                                    self.stop_requested.set()
+                                    break
+                    except Exception:
+                        pass  # Silently handle any stdin errors
+
+                listener_thread = None
+                if stop_key != "ctrl_c":
+                    listener_thread = threading.Thread(target=stdin_listener, daemon=True)
+                    listener_thread.start()
+
                 stream.start()
 
                 try:
-                    # Monitor recording status - exit when buffer fills
-                    while self.is_recording:
+                    # Monitor recording status - exit when buffer fills or stop requested
+                    while self.is_recording and not self.stop_requested.is_set():
                         time.sleep(0.1)  # Check every 100ms
+
+                    if self.stop_requested.is_set():
+                        print("\nRecording stopped by user.")
                 except KeyboardInterrupt:
-                    # User pressed Ctrl+C to stop early
+                    # User pressed Ctrl+C (for ctrl_c mode or as fallback)
                     print("\nRecording stopped by user.")
 
                 self.is_recording = False
+                if listener_thread and listener_thread.is_alive():
+                    # Thread will exit on its own when is_recording becomes False
+                    listener_thread.join(timeout=0.5)
                 stream.stop()
                 stream.close()
 
@@ -174,50 +229,73 @@ class STTRecorderApp:
                 except Exception:
                     pass  # Stream may already be stopped or not started
     
-    def transcribe_file(self, audio_path, language="en"):
+    @staticmethod
+    def _collect_segments(segments) -> str:
         """
-        Transcribe audio file
+        Collect text from segments into a single string
+
+        Args:
+            segments: Iterator of transcription segments
+
+        Returns:
+            Combined text from all segments
+        """
+        text_parts = []
+        for segment in segments:
+            text_parts.append(segment.text)
+        return " ".join(text_parts).strip()
+
+    def transcribe_file(self, audio_path: str) -> Dict[str, Any]:
+        """
+        Transcribe audio file using configured task settings
 
         Args:
             audio_path: Path to audio file
-            language: Language code (en, es, fr, etc.)
 
         Returns:
-            Dictionary with transcription results
+            Dictionary with transcription results.
+            For task="both", includes both 'text' (original) and 'translation' (English).
         """
         import gc
 
-        print("Transcribing audio...")
-        segments, info = self.model.transcribe(audio_path, language=language)
+        result: Dict[str, Any] = {}
 
-        # Process segments incrementally to avoid memory issues with long audio files
-        # Only accumulate text strings, not full segment objects
-        text_parts = []
+        # Handle "transcribe" or "both" tasks
+        if self.config.should_transcribe():
+            print("Transcribing audio (keeping original language)...")
+            segments, info = self.model.transcribe(audio_path, language=self.config.language, task="transcribe")
+            result['text'] = self._collect_segments(segments)
+            result['language'] = info.language
+            result['duration'] = info.duration
+            gc.collect()
 
-        for segment in segments:
-            text_parts.append(segment.text)
+        # Handle "translate" or "both" tasks
+        if self.config.should_translate():
+            print("Translating audio to English...")
+            segments, info = self.model.transcribe(audio_path, language=self.config.language, task="translate")
+            translation = self._collect_segments(segments)
 
-        full_text = " ".join(text_parts).strip()
+            # If only translating (not "both"), put in 'text' field
+            if self.config.task == Task.TRANSLATE:
+                result['text'] = translation
+                result['language'] = info.language
+                result['duration'] = info.duration
+            else:
+                # For "both", add as separate 'translation' field
+                result['translation'] = translation
 
-        # Force garbage collection to release PyAV audio decoding buffers
-        gc.collect()
+            gc.collect()
 
-        return {
-            'text': full_text,
-            'language': info.language,
-            'duration': info.duration
-        }
+        return result
     
-    def record_and_transcribe(self, duration=None, language="en", device=None, keep_file=False):
+    def record_and_transcribe(self, duration: Optional[int] = None, device: Optional[int] = None) -> Dict[str, Any]:
         """
         Complete workflow: Record -> Transcribe -> Clean up
-        
+
         Args:
             duration: Recording duration in seconds (None for manual stop)
-            language: Language for transcription
-            device: Audio device to use
-            keep_file: If True, don't delete the audio file
-            
+            device: Audio device to use (None for default)
+
         Returns:
             Transcription result
         """
@@ -225,32 +303,42 @@ class STTRecorderApp:
         try:
             # Record audio
             audio_path = self.record_audio(duration=duration, device=device)
-            
+
+            if audio_path is None:
+                return {}
+
             # Transcribe
-            result = self.transcribe_file(audio_path, language=language)
-            
+            result = self.transcribe_file(audio_path)
+
+            # Display results
             print(f"\n--- Transcription Result ---")
-            print(f"Language: {result['language']}")
-            print(f"Duration: {result['duration']:.2f} seconds")
-            print(f"Text: {result['text']}")
+            if 'language' in result:
+                print(f"Language: {result['language']}")
+            if 'duration' in result:
+                print(f"Duration: {result['duration']:.2f} seconds")
+            if 'text' in result:
+                print(f"Text: {result['text']}")
+            if 'translation' in result:
+                print(f"Translation (English): {result['translation']}")
             print("--- End Result ---\n")
-            
+
             return result
-            
+
         finally:
-            # Clean up audio file
-            if audio_path and os.path.exists(audio_path) and not keep_file:
+            # Clean up audio file based on config
+            if audio_path and os.path.exists(audio_path) and not self.config.keep_recordings:
                 os.unlink(audio_path)
                 print(f"Cleaned up audio file: {audio_path}")
     
-    def transcribe_existing_file(self, file_path, language="en", delete_after=False):
+    def transcribe_existing_file(self, file_path: str) -> Optional[Dict[str, Any]]:
         """
         Transcribe an existing audio file
 
         Args:
             file_path: Path to existing audio file
-            language: Language for transcription
-            delete_after: Whether to delete file after transcription
+
+        Returns:
+            Transcription result or None on error
         """
         # Validate file extension
         valid_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.webm', '.mp4'}
@@ -262,13 +350,19 @@ class STTRecorderApp:
             return None
 
         try:
-            result = self.transcribe_file(file_path, language=language)
+            result = self.transcribe_file(file_path)
 
+            # Display results
             print(f"\n--- Transcription Result ---")
             print(f"File: {file_path}")
-            print(f"Language: {result['language']}")
-            print(f"Duration: {result['duration']:.2f} seconds")
-            print(f"Text: {result['text']}")
+            if 'language' in result:
+                print(f"Language: {result['language']}")
+            if 'duration' in result:
+                print(f"Duration: {result['duration']:.2f} seconds")
+            if 'text' in result:
+                print(f"Text: {result['text']}")
+            if 'translation' in result:
+                print(f"Translation (English): {result['translation']}")
             print("--- End Result ---\n")
 
             return result
@@ -277,61 +371,47 @@ class STTRecorderApp:
             print(f"Error transcribing file: {e}")
             return None
 
-        finally:
-            if delete_after and os.path.exists(file_path):
-                os.unlink(file_path)
-                print(f"Deleted file: {file_path}")
-
 
 def main():
     """Interactive CLI for the STT Recorder App"""
     print("STT Recorder App")
     print("================")
-    
-    # Check for GPU availability
-    try:
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except ImportError:
-        device = "cpu"
-    print(f"Using device: {device}")
-    
-    # Initialize app
-    app = STTRecorderApp(model_size="base", device=device)
-    
+
+    # Initialize app with config
+    app = STTRecorderApp()
+
     while True:
         print("\nOptions:")
         print("1. Record and transcribe (manual stop)")
         print("2. Transcribe existing file")
         print("3. List audio devices")
         print("4. Exit")
-        
+
         choice = input("\nEnter choice (1-4): ").strip()
-        
+
         if choice == "1":
             try:
                 app.record_and_transcribe()
             except Exception as e:
                 print(f"Error: {e}")
-        
+
         elif choice == "2":
             file_path = input("Enter path to audio file: ").strip()
             if os.path.exists(file_path):
-                delete_after = input("Delete file after transcription? (y/n): ").lower().startswith('y')
                 try:
-                    app.transcribe_existing_file(file_path, delete_after=delete_after)
+                    app.transcribe_existing_file(file_path)
                 except Exception as e:
                     print(f"Error: {e}")
             else:
                 print("File not found!")
-        
+
         elif choice == "3":
             app.list_audio_devices()
-        
+
         elif choice == "4":
             print("Goodbye!")
             break
-        
+
         else:
             print("Invalid choice. Please try again.")
 
