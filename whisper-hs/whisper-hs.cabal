@@ -1,0 +1,62 @@
+cabal-version:      3.0
+name:               whisper-hs
+version:            0.1.0.0
+synopsis:           Speech-to-text application using Whisper
+description:        Haskell port of the Python STT recorder with configurable stop signals and translation modes
+license:            MIT
+author:             Nathan Daelman
+maintainer:         nathan@example.com
+category:           Audio
+build-type:         Simple
+
+common shared-properties
+  default-language: Haskell2010
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+library
+  import:           shared-properties
+  hs-source-dirs:   src
+  exposed-modules:
+    STT.Config
+    STT.Audio
+    STT.Whisper
+    STT.App
+  build-depends:
+    , base >=4.14 && <5
+    , aeson >=2.0
+    , async >=2.2
+    , bytestring >=0.11
+    , directory >=1.3
+    , dotenv >=0.9
+    , filepath >=1.4
+    , process >=1.6
+    , stm >=2.5
+    , temporary >=1.3
+    , text >=1.2
+    , time >=1.9
+    , unix >=2.7
+    , vector >=0.12
+    , ansi-terminal >=0.11
+
+executable whisper-hs
+  import:           shared-properties
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:
+    , base
+    , directory
+    , whisper-hs
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N

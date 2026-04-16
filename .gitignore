@@ -39,3 +39,16 @@ env/
 # Temporary files
 *.tmp
 recording_*.wav
+
+# Haskell
+dist-newstyle/
+.ghc.environment.*
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+.haskell-language-server/
+cabal.project.local
+cabal.project.local~
+.HTF/
+.stack-work/
