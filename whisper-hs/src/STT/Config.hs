@@ -106,6 +106,11 @@ data AppConfig = AppConfig
   , language :: !(Maybe Text)
   , task :: !Task
   , keepRecordings :: !Bool
+  -- LLM post-processing settings
+  , llmBinaryPath :: !FilePath
+  , llmModelPath :: !FilePath
+  , llmEnableCleaning :: !Bool
+  , llmExtractTodos :: !Bool
   } deriving (Show, Generic)
 
 -- | Default configuration values
@@ -119,6 +124,11 @@ defaultAppConfig = AppConfig
   , language = Nothing
   , task = Transcribe
   , keepRecordings = False
+  -- LLM defaults
+  , llmBinaryPath = "llama.cpp/main"
+  , llmModelPath = "models/tinyllama-1.1b-chat.gguf"
+  , llmEnableCleaning = True
+  , llmExtractTodos = False
   }
 
 -- | Load configuration from .env file
@@ -138,6 +148,12 @@ loadConfig envFile = do
   task' <- readEnvWithDefault "TASK" (task defaultAppConfig) parseTask
   keepRecordings' <- readEnvWithDefault "KEEP_RECORDINGS" (keepRecordings defaultAppConfig) parseBool
 
+  -- LLM settings
+  llmBinPath' <- readEnvWithDefault "LLM_BINARY_PATH" (llmBinaryPath defaultAppConfig) Just
+  llmModelPath' <- readEnvWithDefault "LLM_MODEL_PATH" (llmModelPath defaultAppConfig) Just
+  llmCleaning' <- readEnvWithDefault "LLM_ENABLE_CLEANING" (llmEnableCleaning defaultAppConfig) parseBool
+  llmTodos' <- readEnvWithDefault "LLM_EXTRACT_TODOS" (llmExtractTodos defaultAppConfig) parseBool
+
   return AppConfig
     { modelSize = modelSize'
     , device = device'
@@ -147,6 +163,10 @@ loadConfig envFile = do
     , language = language'
     , task = task'
     , keepRecordings = keepRecordings'
+    , llmBinaryPath = llmBinPath'
+    , llmModelPath = llmModelPath'
+    , llmEnableCleaning = llmCleaning'
+    , llmExtractTodos = llmTodos'
     }
 
 -- | Read environment variable with default and parser

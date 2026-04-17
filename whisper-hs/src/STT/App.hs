@@ -4,6 +4,8 @@ module STT.App
   ( runApp
   , recordAndTranscribe
   , transcribeExistingFile
+  , cleanTranscriptionMenu
+  , extractTodosMenu
   ) where
 
 import Control.Monad (forever, when)
@@ -14,11 +16,15 @@ import System.Directory (removeFile, doesFileExist)
 import System.Exit (exitSuccess)
 import System.IO (hFlush, stdout)
 import Text.Read (readMaybe)
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format (formatTime, defaultTimeLocale)
 
 import STT.Config (AppConfig(..), Task(..))
 import qualified STT.Config as Config
 import qualified STT.Audio as Audio
 import qualified STT.Whisper as Whisper
+import qualified STT.PostProcess as PostProcess
+import qualified STT.Markdown as Markdown
 
 -- | Main application loop with interactive menu
 runApp :: AppConfig -> IO ()
@@ -35,8 +41,10 @@ runApp config = do
     putStrLn "1. Record and transcribe audio"
     putStrLn "2. Transcribe existing audio file"
     putStrLn "3. List audio devices"
-    putStrLn "4. Quit"
-    putStr "\nChoose an option (1-4): "
+    putStrLn "4. Clean transcription file"
+    putStrLn "5. Extract TODOs from file"
+    putStrLn "6. Quit"
+    putStr "\nChoose an option (1-6): "
     hFlush stdout
 
     choice <- getLine
@@ -46,10 +54,12 @@ runApp config = do
       "1" -> recordAndTranscribeMenu config
       "2" -> transcribeExistingMenu config
       "3" -> listDevicesMenu
-      "4" -> do
+      "4" -> cleanTranscriptionMenu config
+      "5" -> extractTodosMenu config
+      "6" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-4."
+      _ -> putStrLn "Invalid choice. Please choose 1-6."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
@@ -169,3 +179,67 @@ displayTranscription config result = do
     Nothing -> return ()
 
   putStrLn "========================================="
+
+-- | Menu for cleaning transcription files
+cleanTranscriptionMenu :: AppConfig -> IO ()
+cleanTranscriptionMenu config = do
+  putStr "Enter path to transcription file: "
+  hFlush stdout
+  filePath <- getLine
+
+  putStrLn "Cleaning transcription..."
+  result <- PostProcess.cleanTranscriptionFile
+              (llmBinaryPath config)
+              (llmModelPath config)
+              filePath
+
+  case result of
+    Left err -> putStrLn $ "Error: " ++ err
+    Right cleanedText -> do
+      -- Save to new file
+      timestamp <- formatTime defaultTimeLocale "%Y%m%d_%H%M%S" <$> getCurrentTime
+      let outputPath = filePath ++ ".cleaned_" ++ timestamp ++ ".txt"
+      TIO.writeFile outputPath cleanedText
+      putStrLn $ "\nCleaned transcription saved to: " ++ outputPath
+      putStrLn "\n--- Preview (first 500 chars) ---"
+      putStrLn $ T.unpack $ T.take 500 cleanedText
+      putStrLn "..."
+
+-- | Menu for extracting TODOs from transcription
+extractTodosMenu :: AppConfig -> IO ()
+extractTodosMenu config = do
+  putStr "Enter path to transcription file: "
+  hFlush stdout
+  filePath <- getLine
+
+  putStrLn "Extracting action items..."
+  result <- PostProcess.extractTodosFromFile
+              (llmBinaryPath config)
+              (llmModelPath config)
+              filePath
+
+  case result of
+    Left err -> putStrLn $ "Error: " ++ err
+    Right todos -> do
+      -- Also read original for meeting minutes
+      originalText <- TIO.readFile filePath
+
+      -- Create meeting minutes
+      let processedResult = PostProcess.ProcessedResult
+            { PostProcess.originalText = originalText
+            , PostProcess.cleanedText = Nothing
+            , PostProcess.todos = Just todos
+            , PostProcess.processingErrors = []
+            }
+
+      -- Save to markdown
+      timestamp <- formatTime defaultTimeLocale "%Y%m%d_%H%M%S" <$> getCurrentTime
+      let outputPath = filePath ++ ".minutes_" ++ timestamp ++ ".md"
+      Markdown.saveMeetingMinutes outputPath processedResult
+
+      -- Also print to console
+      putStrLn "\n========================================="
+      putStrLn "Action Items Extracted"
+      putStrLn "========================================="
+      TIO.putStrLn todos
+      putStrLn "========================================="

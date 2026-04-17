@@ -4,16 +4,22 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 
 ## Features
 
+### Core Transcription
 - **Real-time audio recording** with multiple microphone support
 - **Configurable stop signals**: Ctrl+C, Enter, or Space
 - **Multiple transcription modes**:
   - Transcribe (keep original language)
   - Translate (translate to English)
   - Both (get both transcription and translation)
-- **Flexible configuration** via `.env` files
 - **Audio device enumeration** and selection
 - **Automatic language detection**
 - **Efficient memory management** for long recordings
+
+### Meeting Minutes & Post-Processing
+- **Grammar & punctuation correction** using LLM (llama.cpp)
+- **Automatic TODO extraction** from meeting transcripts
+- **Markdown meeting minutes** with action items
+- **Clean text output** for documentation
 
 ## Requirements
 
@@ -46,6 +52,19 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
    # Download a model (base model recommended)
    bash ./models/download-ggml-model.sh base
    # Or download other sizes: tiny, small, medium, large
+   ```
+
+3. **Build llama.cpp (for meeting minutes features)**:
+   ```bash
+   # Clone and build llama.cpp
+   cd /home/nathan/Programs/whisper
+   git clone https://github.com/ggerganov/llama.cpp.git
+   cd llama.cpp
+   make
+
+   # Download TinyLlama model (fast, ~600MB)
+   wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+     -O models/tinyllama-1.1b-chat.gguf
    ```
 
 3. **Install audio tools**:
@@ -120,7 +139,15 @@ The application presents an interactive menu:
 3. List audio devices
    - Shows available microphones
 
-4. Quit
+4. Clean transcription file
+   - Fix grammar and punctuation using LLM
+   - Outputs cleaned version to new file
+
+5. Extract TODOs from file
+   - Extract action items from meeting transcript
+   - Generates markdown meeting minutes with TODO list
+
+6. Quit
 ```
 
 ### Recording Options
