@@ -30,7 +30,22 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 - **whisper.cpp**: C++ implementation of Whisper (no Python needed!)
 - **arecord**: ALSA audio recording tool (Linux)
 
-### Installation
+### Quick Setup (Recommended)
+
+Run the automated setup script:
+```bash
+./setup.sh          # Install with base model (recommended)
+# Or choose a specific model:
+# ./setup.sh tiny   # Fastest, least accurate
+# ./setup.sh large  # Best quality, slower
+```
+
+This will:
+- Build whisper.cpp and download the Whisper model
+- Build llama.cpp and download TinyLlama
+- Build the Haskell application
+
+### Manual Installation
 
 1. **Install Haskell and Cabal**:
    ```bash
