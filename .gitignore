@@ -52,3 +52,7 @@ cabal.project.local
 cabal.project.local~
 .HTF/
 .stack-work/
+
+# External dependencies (built locally)
+llama.cpp/
+whisper.cpp/
