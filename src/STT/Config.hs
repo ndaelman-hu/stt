@@ -125,7 +125,7 @@ defaultAppConfig = AppConfig
   , task = Transcribe
   , keepRecordings = False
   -- LLM defaults
-  , llmBinaryPath = "llama.cpp/main"
+  , llmBinaryPath = "llama.cpp/build/bin/llama-cli"
   , llmModelPath = "models/tinyllama-1.1b-chat.gguf"
   , llmEnableCleaning = True
   , llmExtractTodos = False

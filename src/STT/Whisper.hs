@@ -85,8 +85,7 @@ transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either S
 transcribeOnly audioPath modelSize device language shouldTranslate = do
   let modelPath = "models/ggml-" ++ modelSize ++ ".bin"
       outputBase = audioPath <.> "json"
-      baseArgs = [ "./main"
-                 , "-m", modelPath
+      baseArgs = [ "-m", modelPath
                  , "-f", audioPath
                  , "-l", language
                  , "-oj"  -- Output JSON
@@ -97,7 +96,7 @@ transcribeOnly audioPath modelSize device language shouldTranslate = do
              else baseArgs
 
   -- Execute whisper.cpp
-  (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/main" args ""
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/build/bin/whisper-cli" args ""
 
   case exitCode of
     ExitFailure _ -> return $ Left $ "whisper.cpp failed: " ++ stderr

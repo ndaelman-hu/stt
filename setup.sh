@@ -80,8 +80,11 @@ else
 fi
 
 cd llama.cpp
-echo "Building llama.cpp..."
-make -j$(nproc)
+echo "Building llama.cpp with CMake..."
+cmake -B build
+cmake --build build --config Release -j$(nproc)
+# Create symlink for backward compatibility
+ln -sf build/bin/llama-cli main 2>/dev/null || true
 echo "✓ llama.cpp built successfully"
 
 # Create models directory if it doesn't exist
