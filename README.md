@@ -1,225 +1,337 @@
-# STT Recorder App
+# Whisper-HS: Real-time Speech-to-Text Transcriber
 
-A simple yet powerful speech-to-text (STT) application that records audio and transcribes it using OpenAI's Whisper model via the faster-whisper library.
+A Haskell implementation of the real-time speech-to-text transcription application using OpenAI's Whisper model. This is a complete port of the Python version with full feature parity.
 
 ## Features
 
-- **Flexible configuration** via `.env` file - no code changes needed
-- **Record audio** from your microphone with manual or timed recording
-- **Configurable stop signals** - use Ctrl+C, Enter, or Space to stop recording
-- **Transcribe** recorded audio or existing audio files
-- **Translation mode** - transcribe, translate to English, or both
-- **Multiple audio formats** - WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4
-- **Multiple language support** - auto-detect or specify language
-- **GPU acceleration** - CUDA support for faster transcription
-- **Interactive CLI** - easy-to-use menu interface
-- **Automatic cleanup** - optionally keep or delete recordings
+### Core Transcription
+- **Real-time audio recording** with multiple microphone support
+- **Configurable stop signals**: Ctrl+C, Enter, or Space
+- **Multiple transcription modes**:
+  - Transcribe (keep original language)
+  - Translate (translate to English)
+  - Both (get both transcription and translation)
+- **Audio device enumeration** and selection
+- **Automatic language detection**
+- **Efficient memory management** for long recordings
 
-### Supported Audio Formats
+### Meeting Minutes & Post-Processing
+- **Grammar & punctuation correction** using LLM (llama.cpp)
+- **Automatic TODO extraction** from meeting transcripts
+- **Markdown meeting minutes** with action items
+- **Clean text output** for documentation
 
-- WAV (.wav)
-- MP3 (.mp3)
-- M4A (.m4a)
-- FLAC (.flac)
-- OGG (.ogg)
-- Opus (.opus)
-- WebM (.webm)
-- MP4 (.mp4)
+## Requirements
 
-### Available Model Sizes
+### System Dependencies
 
-The Whisper model comes in different sizes. Choose based on your needs:
+- **Haskell**: GHC 8.10 or later
+- **Cabal**: 3.0 or later
+- **whisper.cpp**: C++ implementation of Whisper (no Python needed!)
+- **arecord**: ALSA audio recording tool (Linux)
 
-- `tiny` - Fastest, least accurate (~1GB VRAM)
-- `base` - Good balance (default) (~1GB VRAM)
-- `small` - Better accuracy (~2GB VRAM)
-- `medium` - High accuracy (~5GB VRAM)
-- `large` - Best accuracy (~10GB VRAM)
+### Installation
+
+1. **Install Haskell and Cabal**:
+   ```bash
+   # On Ubuntu/Debian
+   sudo apt-get install ghc cabal-install
+
+   # Update Cabal package index
+   cabal update
+   ```
+
+2. **Build whisper.cpp**:
+   ```bash
+   # Clone and build whisper.cpp
+   cd /home/nathan/Programs/whisper
+   git clone https://github.com/ggerganov/whisper.cpp.git
+   cd whisper.cpp
+   make
+
+   # Download a model (base model recommended)
+   bash ./models/download-ggml-model.sh base
+   # Or download other sizes: tiny, small, medium, large
+   ```
+
+3. **Build llama.cpp (for meeting minutes features)**:
+   ```bash
+   # Clone and build llama.cpp
+   cd /home/nathan/Programs/whisper
+   git clone https://github.com/ggerganov/llama.cpp.git
+   cd llama.cpp
+   make
+
+   # Download TinyLlama model (fast, ~600MB)
+   wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+     -O models/tinyllama-1.1b-chat.gguf
+   ```
+
+3. **Install audio tools**:
+   ```bash
+   # On Ubuntu/Debian
+   sudo apt-get install alsa-utils
+   ```
+
+4. **Build the Haskell application**:
+   ```bash
+   cd /home/nathan/Programs/whisper/whisper-hs
+   cabal build
+   ```
 
 ## Configuration
 
-The application is configured using a `.env` file. Create one from the example:
+Create a `.env` file in the project root (or copy from `.env.example`):
 
 ```bash
-cp .env.example .env
-```
+# Whisper model size: tiny, base, small, medium, large
+MODEL_SIZE=base
 
-Edit `.env` to customize settings:
+# Compute device: auto, cpu, cuda
+DEVICE=auto
 
-```env
-# Model settings
-MODEL_SIZE=base        # Options: tiny, base, small, medium, large
-DEVICE=auto           # Options: auto, cpu, cuda
-
-# Recording settings
+# Audio sample rate (Hz): 8000-48000
 SAMPLE_RATE=16000
+
+# Maximum recording duration (minutes): 1-300
 MAX_DURATION_MINUTES=90
-STOP_SIGNAL=ctrl_c    # Options: ctrl_c, enter, space
 
-# Transcription settings
-LANGUAGE=en           # Language code or 'auto'
-TASK=transcribe       # Options: transcribe, translate, both
+# Stop signal: ctrl_c, enter, space
+STOP_SIGNAL=ctrl_c
 
-# File management
+# Language code (leave empty for auto-detection)
+# Examples: en, es, fr, de, ja, zh
+LANGUAGE=
+
+# Task mode: transcribe, translate, both
+TASK=transcribe
+
+# Keep recorded audio files: true, false
 KEEP_RECORDINGS=false
 ```
 
-### Configuration Options
-
-**Model Size**: Choose based on accuracy vs. speed tradeoff
-- `tiny` - Fastest, least accurate (~1GB VRAM)
-- `base` - Good balance (default)
-- `small` - Better accuracy (~2GB VRAM)
-- `medium` - High accuracy (~5GB VRAM)
-- `large` - Best accuracy (~10GB VRAM)
-
-**Stop Signal**: How to stop recording
-- `ctrl_c` - Press Ctrl+C to stop (default)
-- `enter` - Press Enter key to stop
-- `space` - Press Space bar to stop
-
-**Task**: What to do with the audio
-- `transcribe` - Keep original language
-- `translate` - Translate to English
-- `both` - Output both transcription and translation
-
 ## Usage
 
-### Interactive Mode
-
-Run the application in interactive mode:
+### Running the Application
 
 ```bash
-python stt_recorder_app.py
-```
-
-You'll be presented with a menu:
-
-1. **Record and transcribe** - Record audio and transcribe it immediately
-2. **Transcribe existing file** - Transcribe an audio file from disk
-3. **List audio devices** - Show available microphones
-4. **Exit** - Quit the application
-
-### Programmatic Usage
-
-You can also use the `STTRecorderApp` class in your own Python scripts:
-
-```python
-from stt_recorder_app import STTRecorderApp
-
-# Initialize with default .env configuration
-app = STTRecorderApp()
+# Run with default .env configuration
+cabal run whisper-hs
 
 # Or specify a custom config file
-app = STTRecorderApp(config_path="/path/to/custom.env")
-
-# Record and transcribe (uses configured stop signal)
-result = app.record_and_transcribe()
-print(result['text'])
-
-# For task="both", result includes both fields:
-if 'translation' in result:
-    print(f"Original: {result['text']}")
-    print(f"English: {result['translation']}")
-
-# Transcribe an existing file
-result = app.transcribe_existing_file("path/to/audio.wav")
-print(result['text'])
+cabal run whisper-hs -- /path/to/custom.env
 ```
 
-### Recording Behavior & Limits
+### Interactive Menu
 
-**Recording Duration Limits:**
-- Default maximum recording duration: **90 minutes**
-- Prevents memory issues with very long recordings
-- Configurable via `max_recording_minutes` parameter
-- When limit is reached, recording automatically proceeds to transcription
+The application presents an interactive menu:
 
-**Stopping Recordings:**
-- **Manual stop:** Press the configured stop signal (Ctrl+C, Enter, or Space)
-- **Automatic stop:** Recording stops when duration limit is reached
-- **Partial recordings:** Manual stop saves whatever has been recorded (not discarded)
-- Both manual and automatic stops preserve the recorded audio
-- Configure stop signal in `.env` with `STOP_SIGNAL` setting
+```
+1. Record and transcribe audio
+   - Choose duration (or manual stop)
+   - Select audio device
+   - Get transcription results
 
-**Result Dictionary:**
-```python
-result = {
-    'text': str,        # Transcribed text
-    'language': str,    # Detected language code
-    'duration': float   # Audio duration in seconds
-}
+2. Transcribe existing audio file
+   - Provide path to audio file
+   - Supports: WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4
+
+3. List audio devices
+   - Shows available microphones
+
+4. Clean transcription file
+   - Fix grammar and punctuation using LLM
+   - Outputs cleaned version to new file
+
+5. Extract TODOs from file
+   - Extract action items from meeting transcript
+   - Generates markdown meeting minutes with TODO list
+
+6. Quit
 ```
 
-**Memory Optimization:**
-- Optimized for multi-hour recordings
-- Pre-allocated buffers for efficient memory usage
-- Incremental transcription processing
-- Suitable for long-form content like lectures or meetings
+### Recording Options
 
-## Installation
-
-### Requirements
-
-- Python 3.8 or higher
-- A working microphone for recording
-- (Optional) NVIDIA GPU with CUDA for faster transcription
-
-**Windows Users**: See [WINDOWS_DEPLOYMENT.md](WINDOWS_DEPLOYMENT.md) for detailed Windows-specific installation instructions.
-
-### Standard Setup
-
-```bash
-# Clone or download this repository
-git clone <repository-url>
-cd whisper
-
-# Create a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create configuration file
-cp .env.example .env
-# Edit .env to customize settings
+**Timed Recording**:
+```
+Duration in seconds: 10
 ```
 
-### Optional: GPU Support
-
-For GPU acceleration, install PyTorch with CUDA support:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu118
+**Manual Stop**:
 ```
+Duration in seconds: [press Enter]
+```
+Then press your configured stop signal (Ctrl+C, Enter, or Space).
+
+### Example Workflow
+
+1. Start the application
+2. Choose option 1 (Record and transcribe)
+3. Press Enter for manual stop
+4. Start speaking
+5. Press your stop signal when done
+6. View transcription results
+
+## Configuration Options
+
+### Model Sizes
+
+- `tiny`: Fastest, lowest accuracy (~1GB RAM)
+- `base`: Good balance (~1GB RAM)
+- `small`: Better accuracy (~2GB RAM)
+- `medium`: High accuracy (~5GB RAM)
+- `large`: Best accuracy (~10GB RAM)
+
+### Device Options
+
+- `auto`: Automatically detect CUDA availability
+- `cpu`: Force CPU usage
+- `cuda`: Use NVIDIA GPU (requires CUDA toolkit)
+
+### Task Modes
+
+- `transcribe`: Keep original language
+- `translate`: Translate to English
+- `both`: Get both transcription and translation
+
+### Stop Signals
+
+- `ctrl_c`: Press Ctrl+C to stop (traditional)
+- `enter`: Press Enter to stop (convenient)
+- `space`: Press Space to stop (quick)
+
+## Architecture
+
+### Module Structure
+
+```
+whisper-hs/
+├── src/
+│   └── STT/
+│       ├── Config.hs      -- Configuration management
+│       ├── Audio.hs       -- Audio recording
+│       ├── Whisper.hs     -- Whisper integration
+│       └── App.hs         -- Main application logic
+├── app/
+│   └── Main.hs            -- Entry point
+└── scripts/
+    ├── whisper_wrapper.py -- [DEPRECATED] Old Python wrapper
+    └── DEPRECATED.md      -- Migration notes
+```
+
+### How It Works
+
+1. **Configuration Loading**: Reads `.env` file using `dotenv` package
+2. **Audio Capture**: Uses `arecord` via system process
+3. **Stop Signal Detection**: Monitors terminal input with async threads
+4. **Transcription**: Calls `whisper.cpp` binary with JSON output
+5. **Result Display**: Parses JSON response and displays formatted results
+
+### Whisper Integration
+
+The application uses **whisper.cpp** - a pure C++ implementation of OpenAI's Whisper:
+
+```
+Haskell App → whisper.cpp binary → GGML Model
+```
+
+This approach:
+- **No Python dependency** - fully self-contained
+- **Fast** - C++ implementation with optimizations
+- **Lightweight** - quantized GGML models
+- **Cross-platform** - builds on Linux, macOS, Windows
+- **Simple integration** - subprocess with JSON output
 
 ## Troubleshooting
 
-### Audio Recording Issues
+### "arecord: command not found"
 
-If you encounter audio device errors:
+Install ALSA utilities:
+```bash
+sudo apt-get install alsa-utils
+```
 
-1. List available audio devices using option 3 in the interactive menu
-2. Note the device index you want to use
-3. Modify the code or specify the device parameter when calling recording functions
+### "No audio devices found"
 
-### GPU Not Detected
+Check your audio devices:
+```bash
+arecord -L
+```
 
-Make sure you have:
-- NVIDIA GPU with CUDA support
-- CUDA toolkit installed
-- PyTorch with CUDA support installed
+### "whisper.cpp failed" or "whisper.cpp/main: not found"
 
-### Model Download
+Ensure whisper.cpp is built and in the correct location:
+```bash
+cd /home/nathan/Programs/whisper/whisper.cpp
+make
+ls -la main  # Should show the compiled binary
+```
 
-The first time you run the app with a specific model size, it will download the model automatically. This may take a few minutes depending on your internet connection.
+The application expects `whisper.cpp/main` relative to the whisper directory.
+
+### "Model not found"
+
+Download the model you're trying to use:
+```bash
+cd /home/nathan/Programs/whisper/whisper.cpp
+bash ./models/download-ggml-model.sh base
+# Or: tiny, small, medium, large
+```
+
+Models are downloaded to `whisper.cpp/models/` directory.
+
+### CUDA/GPU Support
+
+whisper.cpp supports CUDA, but requires recompiling with CUDA support:
+```bash
+cd whisper.cpp
+make clean
+WHISPER_CUBLAS=1 make
+```
+
+Or use CPU-only (default) which works well for real-time transcription.
+
+### Build errors
+
+Update Cabal dependencies:
+```bash
+cabal update
+cabal clean
+cabal build
+```
+
+## Comparison with Python Version
+
+This Haskell port provides:
+- ✅ Full feature parity
+- ✅ Type-safe configuration
+- ✅ Functional architecture
+- ✅ Concurrent recording and monitoring
+- ✅ Same user experience
+- ✅ **No Python dependency** - uses whisper.cpp instead
+
+Differences:
+- Uses Cabal instead of pip
+- Audio via `arecord` instead of `sounddevice`
+- STM for thread-safe state instead of `threading.Lock`
+- whisper.cpp (C++) instead of faster-whisper (Python)
+- Fully self-contained binary (no Python runtime needed)
+
+## Contributing
+
+Contributions welcome! Areas for improvement:
+- PortAudio FFI for cross-platform audio
+- Native whisper.cpp bindings
+- Additional stop signal options
+- GUI interface
+- Streaming transcription
 
 ## License
 
-This project is provided as-is for educational and personal use.
+MIT License
 
-## Acknowledgments
+## Credits
 
-- [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Fast implementation of OpenAI's Whisper
-- [OpenAI Whisper](https://github.com/openai/whisper) - Original Whisper model
+- Original Python version by Nathan Daelman
+- OpenAI Whisper model
+- faster-whisper library by Guillaume Klein
