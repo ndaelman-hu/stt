@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module STT.Config
   ( -- * Configuration Types
@@ -31,6 +32,7 @@ import Configuration.Dotenv (loadFile, defaultConfig)
 import qualified Configuration.Dotenv as Dotenv
 import Text.Read (readMaybe)
 import Control.Monad (when)
+import Control.Exception (catch, IOException)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
 
@@ -122,8 +124,9 @@ defaultAppConfig = AppConfig
 -- | Load configuration from .env file
 loadConfig :: FilePath -> IO AppConfig
 loadConfig envFile = do
-  -- Load .env file if it exists
-  _ <- Dotenv.loadFile (Dotenv.defaultConfig { Dotenv.configPath = [envFile] })
+  -- Load .env file if it exists (ignore if file doesn't exist)
+  _ <- (Dotenv.loadFile (Dotenv.defaultConfig { Dotenv.configPath = [envFile] }))
+       `catch` \(_ :: IOException) -> return ()
 
   -- Read environment variables with defaults
   modelSize' <- readEnvWithDefault "MODEL_SIZE" (modelSize defaultAppConfig) parseModelSize
@@ -239,7 +242,8 @@ getDeviceString CUDA = return "cuda"
 -- | Check if CUDA is available
 checkCuda :: IO Bool
 checkCuda = do
-  result <- readProcessWithExitCode "nvidia-smi" [] ""
-  case result of
+  result <- (readProcessWithExitCode "nvidia-smi" [] "" >>= \r -> case r of
     (ExitSuccess, _, _) -> return True
-    _ -> return False
+    _ -> return False)
+    `catch` \(_ :: IOException) -> return False
+  return result

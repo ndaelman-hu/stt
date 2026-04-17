@@ -7,15 +7,17 @@ module STT.Whisper
   , transcribeFileWithConfig
   ) where
 
-import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode)
+import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode, Value(..))
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Text as T
 import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.Char8 as BSL8
 import GHC.Generics (Generic)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory, (<.>))
 import STT.Config (AppConfig(..), ModelSize(..), Device(..), Task(..))
 import qualified STT.Config as Config
 
@@ -27,74 +29,110 @@ data TranscriptionResult = TranscriptionResult
   , transTranslation :: !(Maybe Text)
   } deriving (Show, Eq, Generic)
 
--- | JSON response from Python wrapper
-data WhisperResponse = WhisperResponse
-  { success :: !Bool
-  , resText :: !(Maybe Text)
-  , resLanguage :: !(Maybe Text)
-  , resDuration :: !(Maybe Double)
-  , resTranslation :: !(Maybe Text)
-  , resError :: !(Maybe Text)
+-- | JSON response from whisper.cpp
+data WhisperCppResponse = WhisperCppResponse
+  { transcription :: ![TranscriptSegment]
+  , resultInfo :: !(Maybe ResultInfo)
   } deriving (Show, Generic)
 
-instance FromJSON WhisperResponse where
-  parseJSON = withObject "WhisperResponse" $ \v -> WhisperResponse
-    <$> v .: "success"
-    <*> v .:? "text"
-    <*> v .:? "language"
-    <*> v .:? "duration"
-    <*> v .:? "translation"
-    <*> v .:? "error"
+data TranscriptSegment = TranscriptSegment
+  { segmentText :: !Text
+  } deriving (Show, Generic)
+
+data ResultInfo = ResultInfo
+  { detectedLanguage :: !(Maybe Text)
+  } deriving (Show, Generic)
+
+instance FromJSON WhisperCppResponse where
+  parseJSON = withObject "WhisperCppResponse" $ \v -> WhisperCppResponse
+    <$> v .: "transcription"
+    <*> v .:? "result"
+
+instance FromJSON TranscriptSegment where
+  parseJSON = withObject "TranscriptSegment" $ \v -> TranscriptSegment
+    <$> v .: "text"
+
+instance FromJSON ResultInfo where
+  parseJSON = withObject "ResultInfo" $ \v -> ResultInfo
+    <$> v .:? "language"
 
 -- | Transcribe audio file using configuration
 transcribeFileWithConfig :: AppConfig -> FilePath -> IO (Either String TranscriptionResult)
 transcribeFileWithConfig config audioPath = do
   deviceStr <- Config.getDeviceString (device config)
   let modelSizeStr = modelSizeToString (modelSize config)
-      taskStr = taskToString (task config)
-      langStr = maybe "" T.unpack (language config)
+      taskMode = task config
+      langStr = maybe "auto" T.unpack (language config)
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr taskStr
+  transcribeFile audioPath modelSizeStr deviceStr langStr taskMode
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
-  :: FilePath  -- ^ Path to audio file
-  -> String    -- ^ Model size (tiny, base, small, medium, large)
-  -> String    -- ^ Device (cpu, cuda)
-  -> String    -- ^ Language (empty string for auto-detect)
-  -> String    -- ^ Task (transcribe, translate, both)
+  :: FilePath     -- ^ Path to audio file
+  -> String       -- ^ Model size (tiny, base, small, medium, large)
+  -> String       -- ^ Device (cpu, cuda)
+  -> String       -- ^ Language (auto or language code)
+  -> Task         -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSize device language task = do
-  -- Construct command
-  -- Script path: look in whisper-hs/scripts first, then scripts/
-  let scriptPath = "whisper-hs/scripts/whisper_wrapper.py"
-      args = [ scriptPath
-             , audioPath
-             , "--model-size", modelSize
-             , "--device", device
-             , "--task", task
-             ] ++ (if null language then [] else ["--language", language])
+transcribeFile audioPath modelSize device language taskMode = do
+  case taskMode of
+    Transcribe -> transcribeOnly audioPath modelSize device language False
+    Translate -> transcribeOnly audioPath modelSize device language True
+    Both -> transcribeBoth audioPath modelSize device language
 
-  -- Execute Python wrapper
-  (exitCode, stdout, stderr) <- readProcessWithExitCode "python3" args ""
+-- | Transcribe only (with optional translation)
+transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly audioPath modelSize device language shouldTranslate = do
+  let modelPath = "models/ggml-" ++ modelSize ++ ".bin"
+      outputBase = audioPath <.> "json"
+      baseArgs = [ "./main"
+                 , "-m", modelPath
+                 , "-f", audioPath
+                 , "-l", language
+                 , "-oj"  -- Output JSON
+                 , "-of", dropExtension outputBase
+                 ]
+      args = if shouldTranslate
+             then baseArgs ++ ["--translate"]
+             else baseArgs
+
+  -- Execute whisper.cpp
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/main" args ""
 
   case exitCode of
-    ExitFailure _ -> return $ Left $ "Whisper process failed: " ++ stderr
+    ExitFailure _ -> return $ Left $ "whisper.cpp failed: " ++ stderr
     ExitSuccess -> do
-      -- Parse JSON response
-      case decode (BSL.fromStrict $ encodeUtf8 $ T.pack stdout) of
-        Nothing -> return $ Left $ "Failed to parse JSON response: " ++ stdout
-        Just response ->
-          if success response
-            then case resText response of
-              Nothing -> return $ Left "Response missing 'text' field"
-              Just txt -> return $ Right TranscriptionResult
-                { transText = txt
-                , transLanguage = resLanguage response
-                , transDuration = resDuration response
-                , transTranslation = resTranslation response
-                }
-            else return $ Left $ maybe "Unknown error" T.unpack (resError response)
+      -- Try to parse JSON output
+      case decode (BSL8.pack stdout) of
+        Nothing -> return $ Left $ "Failed to parse whisper.cpp JSON output"
+        Just response -> do
+          let text = T.concat $ map segmentText (transcription response)
+              lang = case resultInfo response of
+                       Just info -> detectedLanguage info
+                       Nothing -> Nothing
+          return $ Right TranscriptionResult
+            { transText = T.strip text
+            , transLanguage = lang
+            , transDuration = Nothing  -- whisper.cpp doesn't provide total duration easily
+            , transTranslation = Nothing
+            }
+
+-- | Transcribe and translate (both modes)
+transcribeBoth :: FilePath -> String -> String -> String -> IO (Either String TranscriptionResult)
+transcribeBoth audioPath modelSize device language = do
+  -- First, transcribe
+  transResult <- transcribeOnly audioPath modelSize device language False
+  case transResult of
+    Left err -> return $ Left err
+    Right transcription -> do
+      -- Then, translate
+      translateResult <- transcribeOnly audioPath modelSize device language True
+      case translateResult of
+        Left err -> return $ Left err
+        Right translation ->
+          return $ Right transcription
+            { transTranslation = Just (transText translation)
+            }
 
 -- Helper functions
 modelSizeToString :: ModelSize -> String
@@ -104,7 +142,9 @@ modelSizeToString Small = "small"
 modelSizeToString Medium = "medium"
 modelSizeToString Large = "large"
 
-taskToString :: Task -> String
-taskToString Transcribe = "transcribe"
-taskToString Translate = "translate"
-taskToString Both = "both"
+-- Helper to drop extension
+dropExtension :: FilePath -> FilePath
+dropExtension path =
+  let dir = takeDirectory path
+      name = takeWhile (/= '.') (reverse (takeWhile (/= '/') (reverse path)))
+  in if null dir then name else dir </> name

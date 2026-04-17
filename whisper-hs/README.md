@@ -21,8 +21,7 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 
 - **Haskell**: GHC 8.10 or later
 - **Cabal**: 3.0 or later
-- **Python 3**: For Whisper wrapper script
-- **faster-whisper**: Python package for speech recognition
+- **whisper.cpp**: C++ implementation of Whisper (no Python needed!)
 - **arecord**: ALSA audio recording tool (Linux)
 
 ### Installation
@@ -36,10 +35,17 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
    cabal update
    ```
 
-2. **Install Python dependencies**:
+2. **Build whisper.cpp**:
    ```bash
-   # Install faster-whisper
-   pip3 install faster-whisper
+   # Clone and build whisper.cpp
+   cd /home/nathan/Programs/whisper
+   git clone https://github.com/ggerganov/whisper.cpp.git
+   cd whisper.cpp
+   make
+
+   # Download a model (base model recommended)
+   bash ./models/download-ggml-model.sh base
+   # Or download other sizes: tiny, small, medium, large
    ```
 
 3. **Install audio tools**:
@@ -50,7 +56,7 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 
 4. **Build the Haskell application**:
    ```bash
-   cd whisper-hs
+   cd /home/nathan/Programs/whisper/whisper-hs
    cabal build
    ```
 
@@ -182,7 +188,8 @@ whisper-hs/
 ├── app/
 │   └── Main.hs            -- Entry point
 └── scripts/
-    └── whisper_wrapper.py -- Python Whisper wrapper
+    ├── whisper_wrapper.py -- [DEPRECATED] Old Python wrapper
+    └── DEPRECATED.md      -- Migration notes
 ```
 
 ### How It Works
@@ -190,22 +197,23 @@ whisper-hs/
 1. **Configuration Loading**: Reads `.env` file using `dotenv` package
 2. **Audio Capture**: Uses `arecord` via system process
 3. **Stop Signal Detection**: Monitors terminal input with async threads
-4. **Transcription**: Calls Python wrapper script that uses `faster-whisper`
+4. **Transcription**: Calls `whisper.cpp` binary with JSON output
 5. **Result Display**: Parses JSON response and displays formatted results
 
 ### Whisper Integration
 
-The application wraps the `faster-whisper` Python library via a subprocess interface:
+The application uses **whisper.cpp** - a pure C++ implementation of OpenAI's Whisper:
 
 ```
-Haskell App → Python Script → faster-whisper → Whisper Model
+Haskell App → whisper.cpp binary → GGML Model
 ```
 
 This approach:
-- Avoids complex FFI bindings
-- Leverages mature Python ML ecosystem
-- Maintains separation of concerns
-- Allows easy updates to Whisper versions
+- **No Python dependency** - fully self-contained
+- **Fast** - C++ implementation with optimizations
+- **Lightweight** - quantized GGML models
+- **Cross-platform** - builds on Linux, macOS, Windows
+- **Simple integration** - subprocess with JSON output
 
 ## Troubleshooting
 
@@ -223,21 +231,38 @@ Check your audio devices:
 arecord -L
 ```
 
-### "Whisper process failed"
+### "whisper.cpp failed" or "whisper.cpp/main: not found"
 
-Ensure `faster-whisper` is installed:
+Ensure whisper.cpp is built and in the correct location:
 ```bash
-pip3 install --upgrade faster-whisper
+cd /home/nathan/Programs/whisper/whisper.cpp
+make
+ls -la main  # Should show the compiled binary
 ```
 
-### CUDA errors
+The application expects `whisper.cpp/main` relative to the whisper directory.
 
-If using CUDA, ensure:
-- NVIDIA drivers are installed
-- CUDA toolkit is installed
-- `nvidia-smi` command works
+### "Model not found"
 
-Or set `DEVICE=cpu` in `.env` to use CPU only.
+Download the model you're trying to use:
+```bash
+cd /home/nathan/Programs/whisper/whisper.cpp
+bash ./models/download-ggml-model.sh base
+# Or: tiny, small, medium, large
+```
+
+Models are downloaded to `whisper.cpp/models/` directory.
+
+### CUDA/GPU Support
+
+whisper.cpp supports CUDA, but requires recompiling with CUDA support:
+```bash
+cd whisper.cpp
+make clean
+WHISPER_CUBLAS=1 make
+```
+
+Or use CPU-only (default) which works well for real-time transcription.
 
 ### Build errors
 
@@ -256,12 +281,14 @@ This Haskell port provides:
 - ✅ Functional architecture
 - ✅ Concurrent recording and monitoring
 - ✅ Same user experience
+- ✅ **No Python dependency** - uses whisper.cpp instead
 
 Differences:
 - Uses Cabal instead of pip
 - Audio via `arecord` instead of `sounddevice`
 - STM for thread-safe state instead of `threading.Lock`
-- Subprocess wrapper for Whisper instead of direct library calls
+- whisper.cpp (C++) instead of faster-whisper (Python)
+- Fully self-contained binary (no Python runtime needed)
 
 ## Contributing
 
