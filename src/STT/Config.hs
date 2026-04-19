@@ -126,7 +126,7 @@ defaultAppConfig = AppConfig
   , keepRecordings = False
   -- LLM defaults
   , llmBinaryPath = "llama.cpp/build/bin/llama-cli"
-  , llmModelPath = "models/tinyllama-1.1b-chat.gguf"
+  , llmModelPath = "llama.cpp/models/tinyllama-1.1b-chat.gguf"
   , llmEnableCleaning = True
   , llmExtractTodos = False
   }

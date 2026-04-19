@@ -17,7 +17,7 @@ import qualified Data.ByteString.Lazy.Char8 as BSL8
 import GHC.Generics (Generic)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
-import System.FilePath ((</>), takeDirectory, (<.>))
+-- System.FilePath not needed anymore
 import STT.Config (AppConfig(..), ModelSize(..), Device(..), Task(..))
 import qualified STT.Config as Config
 
@@ -83,13 +83,12 @@ transcribeFile audioPath modelSize device language taskMode = do
 -- | Transcribe only (with optional translation)
 transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
 transcribeOnly audioPath modelSize device language shouldTranslate = do
-  let modelPath = "models/ggml-" ++ modelSize ++ ".bin"
-      outputBase = audioPath <.> "json"
+  let modelPath = "whisper.cpp/models/ggml-" ++ modelSize ++ ".bin"
+      jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
                  , "-f", audioPath
                  , "-l", language
-                 , "-oj"  -- Output JSON
-                 , "-of", dropExtension outputBase
+                 , "-oj"  -- Output JSON to file
                  ]
       args = if shouldTranslate
              then baseArgs ++ ["--translate"]
@@ -101,8 +100,9 @@ transcribeOnly audioPath modelSize device language shouldTranslate = do
   case exitCode of
     ExitFailure _ -> return $ Left $ "whisper.cpp failed: " ++ stderr
     ExitSuccess -> do
-      -- Try to parse JSON output
-      case decode (BSL8.pack stdout) of
+      -- Read JSON output from file
+      jsonContent <- BSL.readFile jsonOutputPath
+      case decode jsonContent of
         Nothing -> return $ Left $ "Failed to parse whisper.cpp JSON output"
         Just response -> do
           let text = T.concat $ map segmentText (transcription response)
@@ -140,10 +140,3 @@ modelSizeToString Base = "base"
 modelSizeToString Small = "small"
 modelSizeToString Medium = "medium"
 modelSizeToString Large = "large"
-
--- Helper to drop extension
-dropExtension :: FilePath -> FilePath
-dropExtension path =
-  let dir = takeDirectory path
-      name = takeWhile (/= '.') (reverse (takeWhile (/= '/') (reverse path)))
-  in if null dir then name else dir </> name
