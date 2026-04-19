@@ -15,12 +15,21 @@ module STT.Config
 
     -- * Configuration Loading
   , loadConfig
-  , defaultConfig
+  , defaultAppConfig
 
     -- * Helper Functions
   , shouldTranscribe
   , shouldTranslate
   , getDeviceString
+  , mkSampleRate
+  , mkMinutes
+
+    -- * Parsers (for testing)
+  , parseModelSize
+  , parseDevice
+  , parseStopSignal
+  , parseTask
+  , parseBool
   ) where
 
 import Data.Aeson (FromJSON(..), ToJSON)
@@ -28,10 +37,8 @@ import qualified Data.Text as T
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
-import Configuration.Dotenv (loadFile, defaultConfig)
 import qualified Configuration.Dotenv as Dotenv
 import Text.Read (readMaybe)
-import Control.Monad (when)
 import Control.Exception (catch, IOException)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))

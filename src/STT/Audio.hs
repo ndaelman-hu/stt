@@ -12,19 +12,17 @@ module STT.Audio
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel, wait)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM (TVar, newTVarIO, readTVar, writeTVar, atomically)
-import Control.Exception (bracket, finally, catch, SomeException)
+import Control.Exception (finally)
 import Control.Monad (when, unless, void)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import System.Process (readProcessWithExitCode, callProcess, spawnProcess, waitForProcess, terminateProcess, ProcessHandle)
+import System.Process (readProcessWithExitCode, spawnProcess, waitForProcess, terminateProcess)
 import System.Exit (ExitCode(..))
 import System.IO (hSetEcho, hSetBuffering, stdin, BufferMode(..), hReady, hGetChar)
 import System.Posix.Signals (installHandler, Handler(Catch), sigINT)
-import System.IO.Temp (withSystemTempFile)
-import System.FilePath ((</>), (<.>))
+import System.FilePath ((</>))
 import STT.Config (AppConfig(..), StopSignal(..), SampleRate(..), Minutes(..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
@@ -52,14 +50,14 @@ listAudioDevices = do
 
 -- | Record audio with configuration (chooses timed or manual based on duration)
 recordAudio :: AppConfig -> Maybe Int -> Maybe Int -> IO (Maybe FilePath)
-recordAudio config duration device =
+recordAudio config duration devId =
   case duration of
-    Just d -> recordAudioTimed config d device
-    Nothing -> recordAudioManual config device
+    Just d -> recordAudioTimed config d devId
+    Nothing -> recordAudioManual config devId
 
 -- | Record audio for a fixed duration
 recordAudioTimed :: AppConfig -> Int -> Maybe Int -> IO (Maybe FilePath)
-recordAudioTimed config durationSecs deviceId = do
+recordAudioTimed config durationSecs devIdx = do
   timestamp <- formatTime defaultTimeLocale "%Y%m%d_%H%M%S" <$> getCurrentTime
   let filename = "recording_" ++ timestamp ++ ".wav"
       tempDir = "/tmp"
@@ -69,7 +67,7 @@ recordAudioTimed config durationSecs deviceId = do
   putStrLn $ "Output: " ++ outputPath
 
   let sampleRateStr = show $ unSampleRate (sampleRate config)
-      deviceArg = case deviceId of
+      deviceArg = case devIdx of
         Nothing -> []
         Just d -> ["-D", "hw:" ++ show d]
 
@@ -88,7 +86,7 @@ recordAudioTimed config durationSecs deviceId = do
 
 -- | Record audio with manual stop (Enter, Space, or Ctrl+C)
 recordAudioManual :: AppConfig -> Maybe Int -> IO (Maybe FilePath)
-recordAudioManual config deviceId = do
+recordAudioManual config devIdx = do
   timestamp <- formatTime defaultTimeLocale "%Y%m%d_%H%M%S" <$> getCurrentTime
   let filename = "recording_" ++ timestamp ++ ".wav"
       tempDir = "/tmp"
@@ -111,7 +109,7 @@ recordAudioManual config deviceId = do
     _ -> return ()
 
   let sampleRateStr = show $ unSampleRate (sampleRate config)
-      deviceArg = case deviceId of
+      deviceArg = case devIdx of
         Nothing -> []
         Just d -> ["-D", "hw:" ++ show d]
       maxDurationSecs = unMinutes (maxDurationMinutes config) * 60

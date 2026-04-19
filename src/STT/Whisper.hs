@@ -7,18 +7,14 @@ module STT.Whisper
   , transcribeFileWithConfig
   ) where
 
-import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode, Value(..))
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode)
 import qualified Data.Text as T
 import Data.Text (Text)
-import Data.Text.Encoding (encodeUtf8)
 import qualified Data.ByteString.Lazy as BSL
-import qualified Data.ByteString.Lazy.Char8 as BSL8
 import GHC.Generics (Generic)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
--- System.FilePath not needed anymore
-import STT.Config (AppConfig(..), ModelSize(..), Device(..), Task(..))
+import STT.Config (AppConfig(..), ModelSize(..), Task(..))
 import qualified STT.Config as Config
 
 -- | Result of transcription
@@ -74,20 +70,20 @@ transcribeFile
   -> String       -- ^ Language (auto or language code)
   -> Task         -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSize device language taskMode = do
+transcribeFile audioPath modelSz dev lang taskMode = do
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSize device language False
-    Translate -> transcribeOnly audioPath modelSize device language True
-    Both -> transcribeBoth audioPath modelSize device language
+    Transcribe -> transcribeOnly audioPath modelSz dev lang False
+    Translate -> transcribeOnly audioPath modelSz dev lang True
+    Both -> transcribeBoth audioPath modelSz dev lang
 
 -- | Transcribe only (with optional translation)
 transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSize device language shouldTranslate = do
-  let modelPath = "whisper.cpp/models/ggml-" ++ modelSize ++ ".bin"
+transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
+  let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
                  , "-f", audioPath
-                 , "-l", language
+                 , "-l", lang
                  , "-oj"  -- Output JSON to file
                  ]
       args = if shouldTranslate
@@ -104,9 +100,9 @@ transcribeOnly audioPath modelSize device language shouldTranslate = do
       jsonContent <- BSL.readFile jsonOutputPath
       case decode jsonContent of
         Nothing -> return $ Left $ "Failed to parse whisper.cpp JSON output"
-        Just response -> do
-          let text = T.concat $ map segmentText (transcription response)
-              lang = case resultInfo response of
+        Just resp -> do
+          let text = T.concat $ map segmentText (transcription resp)
+              lang = case resultInfo resp of
                        Just info -> detectedLanguage info
                        Nothing -> Nothing
           return $ Right TranscriptionResult
@@ -118,18 +114,18 @@ transcribeOnly audioPath modelSize device language shouldTranslate = do
 
 -- | Transcribe and translate (both modes)
 transcribeBoth :: FilePath -> String -> String -> String -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSize device language = do
+transcribeBoth audioPath modelSz dev lang = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSize device language False
+  transResult <- transcribeOnly audioPath modelSz dev lang False
   case transResult of
     Left err -> return $ Left err
-    Right transcription -> do
+    Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSize device language True
+      translateResult <- transcribeOnly audioPath modelSz dev lang True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->
-          return $ Right transcription
+          return $ Right trans
             { transTranslation = Just (transText translation)
             }
 

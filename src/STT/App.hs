@@ -9,7 +9,6 @@ module STT.App
   ) where
 
 import Control.Monad (forever, when)
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Directory (removeFile, doesFileExist)
@@ -113,8 +112,8 @@ listDevicesMenu = do
     then putStrLn "No devices found or arecord not available."
     else mapM_ printDevice devices
   where
-    printDevice device =
-      putStrLn $ "  " ++ show (Audio.deviceId device) ++ ": " ++ T.unpack (Audio.deviceName device)
+    printDevice dev =
+      putStrLn $ "  " ++ show (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
 
 -- | Record audio and transcribe it
 recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe Int -> IO ()
