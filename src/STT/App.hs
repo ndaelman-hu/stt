@@ -8,7 +8,7 @@ module STT.App
   , extractTodosMenu
   ) where
 
-import Control.Monad (forever, when)
+import Control.Monad (forever, when, unless)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Directory (removeFile, doesFileExist)
@@ -136,7 +136,7 @@ recordAndTranscribe config duration deviceId = do
           displayTranscription config transcription
 
           -- Clean up audio file if configured
-          when (not $ keepRecordings config) $ do
+          unless (keepRecordings config) $ do
             removeFile audioPath
             putStrLn $ "Removed temporary file: " ++ audioPath
 
@@ -161,10 +161,10 @@ displayTranscription config result = do
   putStrLn "Transcription Results"
   putStrLn "========================================="
 
-  when (Config.shouldTranscribe (task config)) $ do
+  when (Config.shouldTranscribe (task config)) $
     putStrLn $ "\nText: " ++ T.unpack (Whisper.transText result)
 
-  when (Config.shouldTranslate (task config) && task config == Both) $ do
+  when (Config.shouldTranslate (task config) && task config == Both) $
     case Whisper.transTranslation result of
       Just trans -> putStrLn $ "\nTranslation: " ++ T.unpack trans
       Nothing -> return ()

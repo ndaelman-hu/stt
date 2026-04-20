@@ -35,6 +35,7 @@ module STT.Config
 import Data.Aeson (FromJSON(..), ToJSON)
 import qualified Data.Text as T
 import Data.Text (Text)
+import Data.Char (isAsciiUpper)
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 import qualified Configuration.Dotenv as Dotenv
@@ -142,7 +143,7 @@ defaultAppConfig = AppConfig
 loadConfig :: FilePath -> IO AppConfig
 loadConfig envFile = do
   -- Load .env file if it exists (ignore if file doesn't exist)
-  _ <- (Dotenv.loadFile (Dotenv.defaultConfig { Dotenv.configPath = [envFile] }))
+  _ <- Dotenv.loadFile (Dotenv.defaultConfig { Dotenv.configPath = [envFile] })
        `catch` \(_ :: IOException) -> return ()
 
   -- Read environment variables with defaults
@@ -198,7 +199,7 @@ parseModelSize s = case map toLowerChar s of
   "large" -> Just Large
   _ -> Nothing
   where
-    toLowerChar c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
 
 parseDevice :: String -> Maybe Device
 parseDevice s = case map toLowerChar s of
@@ -207,7 +208,7 @@ parseDevice s = case map toLowerChar s of
   "cuda" -> Just CUDA
   _ -> Nothing
   where
-    toLowerChar c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
 
 parseStopSignal :: String -> Maybe StopSignal
 parseStopSignal s = case map toLowerChar s of
@@ -216,7 +217,7 @@ parseStopSignal s = case map toLowerChar s of
   "space" -> Just Space
   _ -> Nothing
   where
-    toLowerChar c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
 
 parseTask :: String -> Maybe Task
 parseTask s = case map toLowerChar s of
@@ -225,7 +226,7 @@ parseTask s = case map toLowerChar s of
   "both" -> Just Both
   _ -> Nothing
   where
-    toLowerChar c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
 
 parseSampleRate :: String -> Maybe SampleRate
 parseSampleRate s = readMaybe s >>= mkSampleRate
@@ -243,7 +244,7 @@ parseBool s = case map toLowerChar s of
   "no" -> Just False
   _ -> Nothing
   where
-    toLowerChar c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
 
 -- | Check if transcription should be performed
 shouldTranscribe :: Task -> Bool
@@ -268,9 +269,8 @@ getDeviceString CUDA = return "cuda"
 
 -- | Check if CUDA is available
 checkCuda :: IO Bool
-checkCuda = do
-  result <- (readProcessWithExitCode "nvidia-smi" [] "" >>= \r -> case r of
+checkCuda =
+  (readProcessWithExitCode "nvidia-smi" [] "" >>= \case
     (ExitSuccess, _, _) -> return True
     _ -> return False)
     `catch` \(_ :: IOException) -> return False
-  return result

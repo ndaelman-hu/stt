@@ -24,9 +24,7 @@ formatMeetingMinutes result = do
           "## Cleaned Transcript\n\n" <> cleaned <> "\n\n"
         Nothing -> ""
 
-      originalSection = if cleanedText result == Nothing
-        then "## Original Transcript\n\n" <> originalText result <> "\n\n"
-        else "## Original Transcript\n\n" <> originalText result <> "\n\n"
+      originalSection = "## Original Transcript\n\n" <> originalText result <> "\n\n"
 
       todosSection = case todos result of
         Just todoList ->

@@ -13,14 +13,14 @@ module STT.Audio
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, cancel)
-import Control.Concurrent.STM (TVar, newTVarIO, readTVar, writeTVar, atomically)
+import Control.Concurrent.STM (TVar, newTVarIO, readTVarIO, writeTVar, atomically)
 import Control.Exception (finally)
 import Control.Monad (when, unless, void)
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.Process (readProcessWithExitCode, spawnProcess, waitForProcess, terminateProcess)
 import System.Exit (ExitCode(..))
-import System.IO (hSetEcho, hSetBuffering, stdin, BufferMode(..), hReady, hGetChar)
+import System.IO (hSetEcho, hSetBuffering, stdin, BufferMode(..), hReady)
 import System.Posix.Signals (installHandler, Handler(Catch), sigINT)
 import System.FilePath ((</>))
 import STT.Config (AppConfig(..), StopSignal(..), SampleRate(..), Minutes(..))
@@ -104,7 +104,7 @@ recordAudioManual config devIdx = do
 
   -- Set up stop signal handler
   case stopSig of
-    CtrlC -> do
+    CtrlC ->
       void $ installHandler sigINT (Catch $ atomically $ writeTVar stopFlag True) Nothing
     _ -> return ()
 
@@ -126,7 +126,7 @@ recordAudioManual config devIdx = do
 
   -- Wait for stop signal
   let waitLoop = do
-        stopped <- atomically $ readTVar stopFlag
+        stopped <- readTVarIO stopFlag
         unless stopped $ do
           threadDelay 100000  -- 100ms
           waitLoop
@@ -150,9 +150,9 @@ waitForKey expectedKey stopFlag = do
   let loop = do
         ready <- hReady stdin
         when ready $ do
-          c <- hGetChar stdin
+          c <- getChar
           when (c == expectedKey) $ atomically $ writeTVar stopFlag True
-        stopped <- atomically $ readTVar stopFlag
+        stopped <- readTVarIO stopFlag
         unless stopped $ do
           threadDelay 100000  -- 100ms
           loop

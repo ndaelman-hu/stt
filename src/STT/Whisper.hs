@@ -31,12 +31,12 @@ data WhisperCppResponse = WhisperCppResponse
   , resultInfo :: !(Maybe ResultInfo)
   } deriving (Show, Generic)
 
-data TranscriptSegment = TranscriptSegment
-  { segmentText :: !Text
+newtype TranscriptSegment = TranscriptSegment
+  { segmentText :: Text
   } deriving (Show, Generic)
 
-data ResultInfo = ResultInfo
-  { detectedLanguage :: !(Maybe Text)
+newtype ResultInfo = ResultInfo
+  { detectedLanguage :: Maybe Text
   } deriving (Show, Generic)
 
 instance FromJSON WhisperCppResponse where
@@ -70,7 +70,7 @@ transcribeFile
   -> String       -- ^ Language (auto or language code)
   -> Task         -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang taskMode = do
+transcribeFile audioPath modelSz dev lang taskMode =
   case taskMode of
     Transcribe -> transcribeOnly audioPath modelSz dev lang False
     Translate -> transcribeOnly audioPath modelSz dev lang True
@@ -99,7 +99,7 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
       -- Read JSON output from file
       jsonContent <- BSL.readFile jsonOutputPath
       case decode jsonContent of
-        Nothing -> return $ Left $ "Failed to parse whisper.cpp JSON output"
+        Nothing -> return $ Left "Failed to parse whisper.cpp JSON output"
         Just resp -> do
           let text = T.concat $ map segmentText (transcription resp)
               lang = case resultInfo resp of

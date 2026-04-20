@@ -11,6 +11,7 @@ module STT.PostProcess
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Text (Text)
+import Data.Maybe (fromMaybe)
 import System.Directory (doesFileExist)
 import qualified STT.LLM as LLM
 import STT.Config (AppConfig(..))
@@ -48,7 +49,7 @@ processTranscription opts original = do
   (todoList, todoErr) <- if extractTodos opts
     then do
       -- Use cleaned text if available, otherwise original
-      let sourceText = maybe original id cleaned
+      let sourceText = fromMaybe original cleaned
       result <- LLM.extractTodos (llamaBinaryPath opts) (modelPath opts) sourceText
       case result of
         Right txt -> return (Just txt, [])

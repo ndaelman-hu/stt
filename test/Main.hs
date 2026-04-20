@@ -121,8 +121,7 @@ jsonParsingTests = testGroup "JSON Parsing"
             ]
       -- This would need the WhisperCppResponse type to be exported
       -- For now, just test that it doesn't crash
-      case (decode json :: Maybe ()) of
-        _ -> return ()
+      return ()
   ]
 
 -- | Property-based tests

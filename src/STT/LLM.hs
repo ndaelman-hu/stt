@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -39,7 +40,7 @@ callLLM llamaBin modelPath systemPrompt userPrompt = do
              , "--no-display-prompt"  -- Don't echo the prompt
              ]
 
-  result <- (readProcessWithExitCode llamaBin args "" >>= \r -> case r of
+  result <- (readProcessWithExitCode llamaBin args "" >>= \case
     (ExitSuccess, stdout, _) -> return $ Right $ T.pack stdout
     (ExitFailure _, _, stderr) -> return $ Left $ "llama.cpp failed: " ++ stderr)
     `catch` \(e :: IOException) -> return $ Left $ "llama.cpp not found: " ++ show e
