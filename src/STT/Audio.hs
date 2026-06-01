@@ -18,7 +18,7 @@ import Control.Exception (finally)
 import Control.Monad (when, unless, void)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Process (readProcessWithExitCode, spawnProcess, waitForProcess, terminateProcess)
+import System.Process (readProcessWithExitCode, spawnProcess, waitForProcess, terminateProcess, getProcessExitCode)
 import System.Exit (ExitCode(..))
 import System.IO (hSetEcho, hSetBuffering, stdin, BufferMode(..), hReady)
 import System.Posix.Signals (installHandler, Handler(Catch), sigINT)
@@ -124,12 +124,15 @@ recordAudioManual config devIdx = do
     Enter -> Just <$> async (waitForKey '\n' stopFlag)
     Space -> Just <$> async (waitForKey ' ' stopFlag)
 
-  -- Wait for stop signal
+  -- Wait for stop signal or process completion
   let waitLoop = do
         stopped <- readTVarIO stopFlag
-        unless stopped $ do
-          threadDelay 100000  -- 100ms
-          waitLoop
+        processFinished <- getProcessExitCode recordingProcess
+        case processFinished of
+          Just _ -> return ()  -- Process finished, exit loop
+          Nothing -> unless stopped $ do
+            threadDelay 100000  -- 100ms
+            waitLoop
 
   waitLoop `finally` do
     -- Stop recording
