@@ -39,15 +39,25 @@ runApp initialConfig = do
   configRef <- newIORef initialConfig
 
   forever $ do
-    putStrLn "\nOptions:"
-    putStrLn "1. Record and transcribe audio"
-    putStrLn "2. Transcribe existing audio file"
-    putStrLn "3. List audio devices"
-    putStrLn "4. Clean transcription file"
-    putStrLn "5. Extract TODOs from file"
-    putStrLn "6. Change language settings"
-    putStrLn "7. Quit"
-    putStr "\nChoose an option (1-7): "
+    putStrLn "\n========================================="
+    putStrLn "Main Menu"
+    putStrLn "========================================="
+    putStrLn ""
+    putStrLn "Recording & Transcription:"
+    putStrLn "  1. Record and transcribe audio"
+    putStrLn "  2. Transcribe existing audio file"
+    putStrLn ""
+    putStrLn "Configuration:"
+    putStrLn "  3. List audio devices"
+    putStrLn "  4. Change language settings"
+    putStrLn ""
+    putStrLn "Post-Processing:"
+    putStrLn "  5. Clean transcription file"
+    putStrLn "  6. Extract TODOs from file"
+    putStrLn ""
+    putStrLn "  7. Quit"
+    putStrLn ""
+    putStr "Choose an option (1-7): "
     hFlush stdout
 
     choice <- getLine
@@ -59,9 +69,9 @@ runApp initialConfig = do
       "1" -> recordAndTranscribeMenu config
       "2" -> transcribeExistingMenu config
       "3" -> listDevicesMenu
-      "4" -> cleanTranscriptionMenu config
-      "5" -> extractTodosMenu config
-      "6" -> changeLanguageMenu configRef
+      "4" -> changeLanguageMenu configRef
+      "5" -> cleanTranscriptionMenu config
+      "6" -> extractTodosMenu config
       "7" -> do
         putStrLn "Goodbye!"
         exitSuccess
