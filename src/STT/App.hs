@@ -11,6 +11,7 @@ module STT.App
 import Control.Monad (forever, when, unless)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (exitSuccess)
 import System.IO (hFlush, stdout)
@@ -27,38 +28,54 @@ import qualified STT.Markdown as Markdown
 
 -- | Main application loop with interactive menu
 runApp :: AppConfig -> IO ()
-runApp config = do
+runApp initialConfig = do
   putStrLn "========================================="
   putStrLn "  Real-time Speech-to-Text Transcriber"
   putStrLn "========================================="
   putStrLn ""
-  printConfig config
+  printConfig initialConfig
   putStrLn ""
 
+  configRef <- newIORef initialConfig
+
   forever $ do
-    putStrLn "\nOptions:"
-    putStrLn "1. Record and transcribe audio"
-    putStrLn "2. Transcribe existing audio file"
-    putStrLn "3. List audio devices"
-    putStrLn "4. Clean transcription file"
-    putStrLn "5. Extract TODOs from file"
-    putStrLn "6. Quit"
-    putStr "\nChoose an option (1-6): "
+    putStrLn "\n========================================="
+    putStrLn "Main Menu"
+    putStrLn "========================================="
+    putStrLn ""
+    putStrLn "Recording & Transcription:"
+    putStrLn "  1. Record and transcribe audio"
+    putStrLn "  2. Transcribe existing audio file"
+    putStrLn ""
+    putStrLn "Configuration:"
+    putStrLn "  3. List audio devices"
+    putStrLn "  4. Change language settings"
+    putStrLn ""
+    putStrLn "Post-Processing:"
+    putStrLn "  5. Clean transcription file"
+    putStrLn "  6. Extract TODOs from file"
+    putStrLn ""
+    putStrLn "  7. Quit"
+    putStrLn ""
+    putStr "Choose an option (1-7): "
     hFlush stdout
 
     choice <- getLine
     putStrLn ""
 
+    config <- readIORef configRef
+
     case choice of
       "1" -> recordAndTranscribeMenu config
       "2" -> transcribeExistingMenu config
       "3" -> listDevicesMenu
-      "4" -> cleanTranscriptionMenu config
-      "5" -> extractTodosMenu config
-      "6" -> do
+      "4" -> changeLanguageMenu configRef
+      "5" -> cleanTranscriptionMenu config
+      "6" -> extractTodosMenu config
+      "7" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-6."
+      _ -> putStrLn "Invalid choice. Please choose 1-7."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
@@ -242,3 +259,43 @@ extractTodosMenu config = do
       putStrLn "========================================="
       TIO.putStrLn todos
       putStrLn "========================================="
+
+-- | Menu for changing language settings
+changeLanguageMenu :: IORef AppConfig -> IO ()
+changeLanguageMenu configRef = do
+  config <- readIORef configRef
+
+  putStrLn $ "Current language: " ++ maybe "auto" T.unpack (language config)
+  putStrLn ""
+  putStrLn "Common language codes:"
+  putStrLn "  auto - Automatic detection"
+  putStrLn "  en   - English"
+  putStrLn "  es   - Spanish"
+  putStrLn "  fr   - French"
+  putStrLn "  de   - German"
+  putStrLn "  it   - Italian"
+  putStrLn "  pt   - Portuguese"
+  putStrLn "  nl   - Dutch"
+  putStrLn "  ja   - Japanese"
+  putStrLn "  zh   - Chinese"
+  putStrLn "  ko   - Korean"
+  putStrLn "  ru   - Russian"
+  putStrLn "  ar   - Arabic"
+  putStrLn ""
+  putStr "Enter language code (or press Enter to keep current): "
+  hFlush stdout
+
+  input <- getLine
+
+  if null input
+    then putStrLn "Language unchanged."
+    else do
+      let newLang = if input == "auto"
+                    then Nothing
+                    else Just (T.pack input)
+      let newConfig = config { language = newLang }
+      writeIORef configRef newConfig
+      putStrLn $ "Language changed to: " ++ maybe "auto" T.unpack newLang
+      putStrLn ""
+      putStrLn "Updated configuration:"
+      printConfig newConfig
