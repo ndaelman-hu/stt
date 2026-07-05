@@ -3,6 +3,9 @@
 
 module STT.Whisper
   ( TranscriptionResult(..)
+  , WhisperCppResponse(..)
+  , TranscriptSegment(..)
+  , ResultInfo(..)
   , transcribeFile
   , transcribeFileWithConfig
   ) where
@@ -23,6 +26,7 @@ data TranscriptionResult = TranscriptionResult
   , transLanguage :: !(Maybe Text)
   , transDuration :: !(Maybe Double)
   , transTranslation :: !(Maybe Text)
+  , transSegments :: ![TranscriptSegment]
   } deriving (Show, Eq, Generic)
 
 -- | JSON response from whisper.cpp
@@ -31,9 +35,13 @@ data WhisperCppResponse = WhisperCppResponse
   , resultInfo :: !(Maybe ResultInfo)
   } deriving (Show, Generic)
 
-newtype TranscriptSegment = TranscriptSegment
-  { segmentText :: Text
-  } deriving (Show, Generic)
+-- | A single transcription segment; offsets are milliseconds from the
+-- start of the audio and absent in JSON emitted by older whisper.cpp builds
+data TranscriptSegment = TranscriptSegment
+  { segmentText :: !Text
+  , segmentFromMs :: !(Maybe Int)
+  , segmentToMs :: !(Maybe Int)
+  } deriving (Show, Eq, Generic)
 
 newtype ResultInfo = ResultInfo
   { detectedLanguage :: Maybe Text
@@ -45,8 +53,14 @@ instance FromJSON WhisperCppResponse where
     <*> v .:? "result"
 
 instance FromJSON TranscriptSegment where
-  parseJSON = withObject "TranscriptSegment" $ \v -> TranscriptSegment
-    <$> v .: "text"
+  parseJSON = withObject "TranscriptSegment" $ \v -> do
+    text <- v .: "text"
+    maybeOffsets <- v .:? "offsets"
+    (fromMs, toMs) <- case maybeOffsets of
+      Nothing -> return (Nothing, Nothing)
+      Just offsets -> flip (withObject "offsets") offsets $ \o ->
+        (,) <$> (Just <$> o .: "from") <*> (Just <$> o .: "to")
+    return $ TranscriptSegment text fromMs toMs
 
 instance FromJSON ResultInfo where
   parseJSON = withObject "ResultInfo" $ \v -> ResultInfo
@@ -110,6 +124,7 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
             , transLanguage = lang
             , transDuration = Nothing  -- whisper.cpp doesn't provide total duration easily
             , transTranslation = Nothing
+            , transSegments = transcription resp
             }
 
 -- | Transcribe and translate (both modes)

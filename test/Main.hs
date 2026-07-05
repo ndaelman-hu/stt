@@ -10,8 +10,10 @@ import Data.Aeson (decode)
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import Data.List (nub)
 import STT.Config
-import STT.LLM (extractReply)
+import STT.Diarize
+import STT.LLM (extractReply, parseRoleSuggestions)
 import qualified STT.Models as Models
+import STT.Whisper (WhisperCppResponse(..), TranscriptSegment(..), ResultInfo(..))
 
 main :: IO ()
 main = defaultMain tests
@@ -23,6 +25,8 @@ tests = testGroup "Whisper-HS Tests"
   , jsonParsingTests
   , modelRegistryTests
   , extractReplyTests
+  , diarizationTests
+  , roleSuggestionTests
   ]
 
 -- | Test configuration parsers
@@ -66,6 +70,22 @@ configParserTests = testGroup "Config Parsers"
           parseTask "TRANSLATE" @?= Just Translate
       , testCase "parses 'both'" $
           parseTask "both" @?= Just Both
+      ]
+
+  , testGroup "parseDouble"
+      [ testCase "parses '0.5'" $
+          parseDouble "0.5" @?= Just 0.5
+      , testCase "rejects garbage" $
+          parseDouble "high" @?= Nothing
+      ]
+
+  , testGroup "parsePositiveInt"
+      [ testCase "parses '2'" $
+          parsePositiveInt "2" @?= Just 2
+      , testCase "rejects 0" $
+          parsePositiveInt "0" @?= Nothing
+      , testCase "rejects negative" $
+          parsePositiveInt "-3" @?= Nothing
       ]
 
   , testGroup "parseBool"
@@ -114,19 +134,117 @@ validationTests = testGroup "Validation"
       ]
   ]
 
--- | Test JSON parsing (would need actual fixtures)
+-- | Test JSON parsing of whisper.cpp output
 jsonParsingTests :: TestTree
 jsonParsingTests = testGroup "JSON Parsing"
-  [ testCase "parses simple whisper response" $ do
+  [ testCase "parses segment without offsets" $ do
       let json = BSL.pack $ concat
             [ "{"
             , "\"transcription\": [{\"text\": \" Hello world\"}],"
             , "\"result\": {\"language\": \"en\"}"
             , "}"
             ]
-      -- This would need the WhisperCppResponse type to be exported
-      -- For now, just test that it doesn't crash
-      return ()
+      case decode json of
+        Nothing -> assertFailure "failed to decode response"
+        Just resp -> do
+          map segmentText (transcription resp) @?= [" Hello world"]
+          map segmentFromMs (transcription resp) @?= [Nothing]
+          fmap detectedLanguage (resultInfo resp) @?= Just (Just "en")
+
+  , testCase "parses whisper-cli fixture with offsets" $ do
+      json <- BSL.readFile "test/fixtures/whisper-response.json"
+      case decode json of
+        Nothing -> assertFailure "failed to decode fixture"
+        Just resp -> do
+          let segments = transcription resp
+          length segments @?= 1
+          segmentFromMs (head segments) @?= Just 0
+          segmentToMs (head segments) @?= Just 10500
+  ]
+
+-- | Test diarization output parsing and speaker alignment
+diarizationTests :: TestTree
+diarizationTests = testGroup "Diarization"
+  [ testGroup "parseDiarizationOutput"
+      [ testCase "parses well-formed lines" $
+          parseDiarizationOutput "0.318 -- 6.865 speaker_00\n7.010 -- 12.3 speaker_01\n"
+            @?= [ SpeakerInterval 0.318 6.865 "speaker_00"
+                , SpeakerInterval 7.010 12.3 "speaker_01"
+                ]
+      , testCase "skips log noise" $
+          parseDiarizationOutput "Loading model...\n0.5 -- 2.0 speaker_00\nDone in 3s\n"
+            @?= [SpeakerInterval 0.5 2.0 "speaker_00"]
+      , testCase "skips lines with unreadable times" $
+          parseDiarizationOutput "abc -- def speaker_00\n" @?= []
+      , testCase "handles empty input" $
+          parseDiarizationOutput "" @?= []
+      ]
+
+  , testGroup "assignSpeakers"
+      [ testCase "assigns by overlap and merges consecutive turns" $ do
+          let intervals = [ SpeakerInterval 0 5 "speaker_00"
+                          , SpeakerInterval 5 10 "speaker_01"
+                          ]
+              segments = [ seg " Hi." 0 2000
+                         , seg " How are you?" 2000 4500
+                         , seg " Fine, thanks." 5500 9000
+                         ]
+          assignSpeakers intervals segments
+            @?= [ SpeakerTurn "Speaker 1" 0 4.5 "Hi. How are you?"
+                , SpeakerTurn "Speaker 2" 5.5 9 "Fine, thanks."
+                ]
+      , testCase "straddling segment goes to larger overlap" $ do
+          let intervals = [ SpeakerInterval 0 3 "speaker_00"
+                          , SpeakerInterval 3 10 "speaker_01"
+                          ]
+              segments = [seg " Borderline." 2000 8000]
+          map stSpeaker (assignSpeakers intervals segments) @?= ["Speaker 1"]
+            -- speaker_01 overlaps 5s vs 1s for speaker_00, but labels are
+            -- normalized by first appearance, so speaker_01 becomes Speaker 1
+      , testCase "segment in a silence gap uses nearest interval" $ do
+          let intervals = [ SpeakerInterval 0 2 "speaker_00"
+                          , SpeakerInterval 8 10 "speaker_01"
+                          ]
+              segments = [seg " Lost in the gap." 6500 7500]
+          map stSpeaker (assignSpeakers intervals segments) @?= ["Speaker 1"]
+      , testCase "no intervals yields a single speaker" $ do
+          let segments = [ seg " One." 0 1000
+                         , seg " Two." 1000 2000
+                         ]
+          assignSpeakers [] segments
+            @?= [SpeakerTurn "Speaker 1" 0 2 "One. Two."]
+      , testCase "segments without offsets inherit the previous speaker" $ do
+          let intervals = [SpeakerInterval 0 5 "speaker_00"]
+              segments = [ seg " Timed." 0 2000
+                         , TranscriptSegment " Untimed." Nothing Nothing
+                         ]
+          map stSpeaker (assignSpeakers intervals segments) @?= ["Speaker 1"]
+      ]
+
+  , testGroup "renderSpeakerTurns"
+      [ testCase "applies confirmed roles, keeping labels without one" $ do
+          let turns = [ SpeakerTurn "Speaker 1" 0 5 "Hello."
+                      , SpeakerTurn "Speaker 2" 5 9 "Hi there."
+                      ]
+          renderSpeakerTurns [("Speaker 1", "Interviewer")] turns
+            @?= "Interviewer: Hello.\n\nSpeaker 2: Hi there."
+      ]
+  ]
+  where
+    seg t fromMs toMs = TranscriptSegment t (Just fromMs) (Just toMs)
+
+-- | Test lenient parsing of LLM role suggestions
+roleSuggestionTests :: TestTree
+roleSuggestionTests = testGroup "Role Suggestions"
+  [ testCase "extracts known speakers from noisy output" $
+      parseRoleSuggestions ["Speaker 1", "Speaker 2"]
+        "Sure! Here are the roles:\nSpeaker 1: Alice\n\nSpeaker 2: Interviewer\nHope that helps!"
+        @?= [("Speaker 1", "Alice"), ("Speaker 2", "Interviewer")]
+  , testCase "ignores unknown speaker labels" $
+      parseRoleSuggestions ["Speaker 1"] "Speaker 3: Ghost\nSpeaker 1: Bob"
+        @?= [("Speaker 1", "Bob")]
+  , testCase "drops empty roles" $
+      parseRoleSuggestions ["Speaker 1"] "Speaker 1:  " @?= []
   ]
 
 -- | Sanity checks on the curated LLM registry

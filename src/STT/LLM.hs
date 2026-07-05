@@ -8,6 +8,8 @@ module STT.LLM
   , extractReply
   , cleanText
   , extractTodos
+  , suggestSpeakerRoles
+  , parseRoleSuggestions
   ) where
 
 import qualified Data.Text as T
@@ -81,6 +83,30 @@ cleanText llamaBin modelPath rawText = do
       userPrompt = "Fix this transcription:\n\n" <> rawText
 
   callLLM llamaBin modelPath systemPrompt userPrompt
+
+-- | Suggest a role or name for each speaker in a diarized transcript
+suggestSpeakerRoles :: FilePath -> FilePath -> [Text] -> Text -> IO (Either String [(Text, Text)])
+suggestSpeakerRoles llamaBin modelPath speakers transcript = do
+  let systemPrompt = "You are a meeting assistant. Given a transcript with numbered speakers, infer each speaker's likely role or name from what they say (for example 'Interviewer', 'Project lead', or 'Alice' if named). Output exactly one line per speaker in the form 'Speaker N: <role>'. Output nothing else."
+      -- TinyLlama runs with -c 4096; keep the transcript well under that
+      userPrompt = "Identify the role of each speaker ("
+                <> T.intercalate ", " speakers
+                <> ") in this conversation:\n\n"
+                <> T.take 2500 transcript
+
+  result <- callLLM llamaBin modelPath systemPrompt userPrompt
+  return $ fmap (parseRoleSuggestions speakers) result
+
+-- | Extract "Speaker N: role" pairs from LLM output, tolerating noise;
+-- only lines matching a known speaker label are kept
+parseRoleSuggestions :: [Text] -> Text -> [(Text, Text)]
+parseRoleSuggestions speakers output =
+  [ (speaker, role)
+  | line <- map T.strip (T.lines output)
+  , speaker <- take 1 [ s | s <- speakers, (s <> ":") `T.isPrefixOf` line ]
+  , let role = T.strip (T.drop (T.length speaker + 1) line)
+  , not (T.null role)
+  ]
 
 -- | Extract TODO items from meeting transcript
 extractTodos :: FilePath -> FilePath -> Text -> IO (Either String Text)

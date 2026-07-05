@@ -30,6 +30,7 @@ data ProcessedResult = ProcessedResult
   { originalText :: !Text
   , cleanedText :: !(Maybe Text)
   , todos :: !(Maybe Text)
+  , speakerTranscript :: !(Maybe Text)
   , processingErrors :: ![String]
   } deriving (Show, Eq)
 
@@ -60,6 +61,7 @@ processTranscription opts original = do
     { originalText = original
     , cleanedText = cleaned
     , todos = todoList
+    , speakerTranscript = Nothing
     , processingErrors = cleanErr ++ todoErr
     }
 

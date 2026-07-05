@@ -30,6 +30,8 @@ module STT.Config
   , parseStopSignal
   , parseTask
   , parseBool
+  , parseDouble
+  , parsePositiveInt
   ) where
 
 import Data.Aeson (FromJSON(..), ToJSON)
@@ -119,6 +121,13 @@ data AppConfig = AppConfig
   , llmModelPath :: !FilePath
   , llmEnableCleaning :: !Bool
   , llmExtractTodos :: !Bool
+  -- Speaker diarization settings
+  , diarizationEnabled :: !Bool
+  , diarizeBinaryPath :: !FilePath
+  , diarizeSegModelPath :: !FilePath
+  , diarizeEmbModelPath :: !FilePath
+  , diarizeNumSpeakers :: !(Maybe Int)
+  , diarizeClusterThreshold :: !Double
   } deriving (Show, Generic)
 
 -- | Default configuration values
@@ -137,6 +146,13 @@ defaultAppConfig = AppConfig
   , llmModelPath = "llama.cpp/models/tinyllama-1.1b-chat.gguf"
   , llmEnableCleaning = True
   , llmExtractTodos = False
+  -- Diarization defaults
+  , diarizationEnabled = False
+  , diarizeBinaryPath = "sherpa-onnx/build/bin/sherpa-onnx-offline-speaker-diarization"
+  , diarizeSegModelPath = "sherpa-onnx/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+  , diarizeEmbModelPath = "sherpa-onnx/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+  , diarizeNumSpeakers = Nothing
+  , diarizeClusterThreshold = 0.5
   }
 
 -- | Load configuration from .env file
@@ -162,6 +178,14 @@ loadConfig envFile = do
   llmCleaning' <- readEnvWithDefault "LLM_ENABLE_CLEANING" (llmEnableCleaning defaultAppConfig) parseBool
   llmTodos' <- readEnvWithDefault "LLM_EXTRACT_TODOS" (llmExtractTodos defaultAppConfig) parseBool
 
+  -- Diarization settings
+  diarEnabled' <- readEnvWithDefault "DIARIZATION_ENABLED" (diarizationEnabled defaultAppConfig) parseBool
+  diarBin' <- readEnvWithDefault "DIARIZE_BINARY_PATH" (diarizeBinaryPath defaultAppConfig) Just
+  diarSegModel' <- readEnvWithDefault "DIARIZE_SEGMENTATION_MODEL" (diarizeSegModelPath defaultAppConfig) Just
+  diarEmbModel' <- readEnvWithDefault "DIARIZE_EMBEDDING_MODEL" (diarizeEmbModelPath defaultAppConfig) Just
+  diarSpeakers' <- readEnvWithDefault "DIARIZE_NUM_SPEAKERS" (diarizeNumSpeakers defaultAppConfig) (fmap Just . parsePositiveInt)
+  diarThreshold' <- readEnvWithDefault "DIARIZE_CLUSTER_THRESHOLD" (diarizeClusterThreshold defaultAppConfig) parseDouble
+
   return AppConfig
     { modelSize = modelSize'
     , device = device'
@@ -175,6 +199,12 @@ loadConfig envFile = do
     , llmModelPath = llmModelPath'
     , llmEnableCleaning = llmCleaning'
     , llmExtractTodos = llmTodos'
+    , diarizationEnabled = diarEnabled'
+    , diarizeBinaryPath = diarBin'
+    , diarizeSegModelPath = diarSegModel'
+    , diarizeEmbModelPath = diarEmbModel'
+    , diarizeNumSpeakers = diarSpeakers'
+    , diarizeClusterThreshold = diarThreshold'
     }
 
 -- | Read environment variable with default and parser
@@ -227,6 +257,12 @@ parseTask s = case map toLowerChar s of
   _ -> Nothing
   where
     toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
+
+parseDouble :: String -> Maybe Double
+parseDouble = readMaybe
+
+parsePositiveInt :: String -> Maybe Int
+parsePositiveInt s = readMaybe s >>= \n -> if n >= 1 then Just n else Nothing
 
 parseSampleRate :: String -> Maybe SampleRate
 parseSampleRate s = readMaybe s >>= mkSampleRate
