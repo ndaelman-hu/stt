@@ -23,6 +23,7 @@ import STT.Config (AppConfig(..), Task(..))
 import qualified STT.Config as Config
 import qualified STT.Audio as Audio
 import qualified STT.Whisper as Whisper
+import qualified STT.Models as Models
 import qualified STT.PostProcess as PostProcess
 import qualified STT.Markdown as Markdown
 
@@ -50,14 +51,15 @@ runApp initialConfig = do
     putStrLn "Configuration:"
     putStrLn "  3. List audio devices"
     putStrLn "  4. Change language settings"
+    putStrLn "  5. Change LLM model"
     putStrLn ""
     putStrLn "Post-Processing:"
-    putStrLn "  5. Clean transcription file"
-    putStrLn "  6. Extract TODOs from file"
+    putStrLn "  6. Clean transcription file"
+    putStrLn "  7. Extract TODOs from file"
     putStrLn ""
-    putStrLn "  7. Quit"
+    putStrLn "  8. Quit"
     putStrLn ""
-    putStr "Choose an option (1-7): "
+    putStr "Choose an option (1-8): "
     hFlush stdout
 
     choice <- getLine
@@ -70,12 +72,13 @@ runApp initialConfig = do
       "2" -> transcribeExistingMenu config
       "3" -> listDevicesMenu
       "4" -> changeLanguageMenu configRef
-      "5" -> cleanTranscriptionMenu config
-      "6" -> extractTodosMenu config
-      "7" -> do
+      "5" -> changeLlmModelMenu configRef
+      "6" -> cleanTranscriptionMenu config
+      "7" -> extractTodosMenu config
+      "8" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-7."
+      _ -> putStrLn "Invalid choice. Please choose 1-8."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
@@ -90,6 +93,7 @@ printConfig config = do
   putStrLn $ "  Language: " ++ maybe "auto" T.unpack (language config)
   putStrLn $ "  Task: " ++ show (task config)
   putStrLn $ "  Keep Recordings: " ++ show (keepRecordings config)
+  putStrLn $ "  LLM Model: " ++ llmModelPath config
 
 -- | Menu for recording and transcribing
 recordAndTranscribeMenu :: AppConfig -> IO ()
@@ -259,6 +263,72 @@ extractTodosMenu config = do
       putStrLn "========================================="
       TIO.putStrLn todos
       putStrLn "========================================="
+
+-- | Menu for choosing (and if necessary downloading) the LLM model used
+-- for post-processing. Any instruct GGUF works; the curated list covers
+-- the speed/quality range for CPU inference.
+changeLlmModelMenu :: IORef AppConfig -> IO ()
+changeLlmModelMenu configRef = do
+  config <- readIORef configRef
+
+  putStrLn $ "Current LLM model: " ++ llmModelPath config
+  putStrLn ""
+  putStrLn "Available models:"
+  mapM_ (printModel config) (zip [1 :: Int ..] Models.knownModels)
+  putStrLn ""
+  putStr "Choose a model number, or type a path to any instruct GGUF (Enter to keep current): "
+  hFlush stdout
+
+  input <- getLine
+  case input of
+    "" -> putStrLn "LLM model unchanged."
+    _ | Just n <- readMaybe input :: Maybe Int
+      , Just spec <- lookup n (zip [1 ..] Models.knownModels) -> selectModel spec
+      | otherwise -> selectPath input
+  where
+    printModel config (n, spec) = do
+      installed <- Models.isInstalled spec
+      let markers = concat
+            [ if Models.modelPath spec == llmModelPath config then " [current]" else ""
+            , if installed then " [installed]" else ""
+            ]
+      putStrLn $ "  " ++ show n ++ ". " ++ Models.modelLabel spec
+              ++ " (" ++ Models.formatSize (Models.modelSizeMB spec) ++ ")"
+              ++ markers
+      putStrLn $ "       " ++ Models.modelNotes spec
+
+    selectModel spec = do
+      installed <- Models.isInstalled spec
+      if installed
+        then setModelPath (Models.modelPath spec)
+        else do
+          putStr $ "Download " ++ Models.modelLabel spec
+                ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
+                ++ ")? (Enter to download, anything else cancels): "
+          hFlush stdout
+          answer <- getLine
+          if null answer
+            then do
+              result <- Models.downloadModel spec
+              case result of
+                Left err -> putStrLn err
+                Right path -> setModelPath path
+            else putStrLn "Download cancelled."
+
+    selectPath path = do
+      exists <- doesFileExist path
+      if exists
+        then setModelPath path
+        else putStrLn $ "File not found: " ++ path
+
+    setModelPath path = do
+      config <- readIORef configRef
+      let newConfig = config { llmModelPath = path }
+      writeIORef configRef newConfig
+      putStrLn $ "LLM model changed to: " ++ path
+      putStrLn ""
+      putStrLn "Updated configuration:"
+      printConfig newConfig
 
 -- | Menu for changing language settings
 changeLanguageMenu :: IORef AppConfig -> IO ()

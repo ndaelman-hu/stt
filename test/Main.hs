@@ -8,7 +8,10 @@ import Test.Tasty.QuickCheck (Arbitrary(..), elements)
 import qualified Data.Text as T
 import Data.Aeson (decode)
 import qualified Data.ByteString.Lazy.Char8 as BSL
+import Data.List (nub)
 import STT.Config
+import STT.LLM (extractReply)
+import qualified STT.Models as Models
 
 main :: IO ()
 main = defaultMain tests
@@ -18,6 +21,8 @@ tests = testGroup "Whisper-HS Tests"
   [ configParserTests
   , validationTests
   , jsonParsingTests
+  , modelRegistryTests
+  , extractReplyTests
   ]
 
 -- | Test configuration parsers
@@ -122,6 +127,62 @@ jsonParsingTests = testGroup "JSON Parsing"
       -- This would need the WhisperCppResponse type to be exported
       -- For now, just test that it doesn't crash
       return ()
+  ]
+
+-- | Sanity checks on the curated LLM registry
+modelRegistryTests :: TestTree
+modelRegistryTests = testGroup "Model Registry"
+  [ testCase "keys are unique" $
+      length (nub (map Models.modelKey Models.knownModels))
+        @?= length Models.knownModels
+  , testCase "file names are unique" $
+      length (nub (map Models.modelFile Models.knownModels))
+        @?= length Models.knownModels
+  , testCase "URLs are https" $
+      assertBool "all https" (all (("https://" ==) . take 8 . Models.modelUrl) Models.knownModels)
+  , testCase "sizes are positive" $
+      assertBool "positive sizes" (all ((> 0) . Models.modelSizeMB) Models.knownModels)
+  , testCase "default setup model is in the registry" $
+      assertBool "tinyllama present"
+        (any (("tinyllama-1.1b-chat.gguf" ==) . Models.modelFile) Models.knownModels)
+  ]
+
+-- | Test extraction of the assistant reply from llama-cli stdout
+extractReplyTests :: TestTree
+extractReplyTests = testGroup "extractReply"
+  [ testCase "single-line prompt" $
+      extractReply "What color is the sky?"
+        (T.unlines
+          [ "build      : b8831"
+          , "available commands:"
+          , "  /exit or Ctrl+C     stop or exit"
+          , ""
+          , "> What color is the sky?"
+          , ""
+          , "Blue."
+          , ""
+          , "[ Prompt: 159,6 t/s | Generation: 51,5 t/s ]"
+          , ""
+          , "Exiting..."
+          ])
+        @?= "Blue."
+  , testCase "multi-line prompt echo is skipped" $
+      extractReply "fix this:\n\nme and him goes\nthey was happy"
+        (T.unlines
+          [ "banner"
+          , "> fix this:"
+          , ""
+          , "me and him goes"
+          , "they was happy"
+          , ""
+          , "He and I went."
+          , "They were happy."
+          , ""
+          , "[ Prompt: 102,8 t/s ]"
+          ])
+        @?= "He and I went.\nThey were happy."
+  , testCase "no echo marker falls back to trailer-stripped output" $
+      extractReply "prompt" "Some reply.\nExiting...\n" @?= "Some reply."
   ]
 
 -- | Property-based tests

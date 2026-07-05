@@ -5,6 +5,7 @@
 module STT.LLM
   ( LLMResponse(..)
   , callLLM
+  , extractReply
   , cleanText
   , extractTodos
   ) where
@@ -22,7 +23,9 @@ data LLMResponse = LLMResponse
   , errorMsg :: !(Maybe String)
   } deriving (Show, Eq)
 
--- | Call llama.cpp with a prompt
+-- | Call llama.cpp with a prompt. The chat template embedded in the GGUF is
+-- applied by llama-cli itself (conversation mode), so any instruct model
+-- works here — nothing is hardcoded to a particular model family.
 callLLM
   :: FilePath  -- ^ Path to llama.cpp binary
   -> FilePath  -- ^ Path to model file
@@ -30,14 +33,15 @@ callLLM
   -> Text      -- ^ User prompt
   -> IO (Either String Text)
 callLLM llamaBin modelPath systemPrompt userPrompt = do
-  let fullPrompt = formatPrompt systemPrompt userPrompt
-      args = [ "-m", modelPath
-             , "-p", T.unpack fullPrompt
+  let args = [ "-m", modelPath
+             , "-sys", T.unpack systemPrompt
+             , "-p", T.unpack userPrompt
+             , "-st"  -- single conversation turn, then exit
+             , "--simple-io"  -- no spinner/ANSI escapes in subprocess output
              , "-n", "2048"  -- Max tokens
              , "--temp", "0.3"  -- Low temperature for consistency
              , "--top-p", "0.9"
              , "-c", "4096"  -- Context size
-             , "--no-display-prompt"  -- Don't echo the prompt
              ]
 
   result <- (readProcessWithExitCode llamaBin args "" >>= \case
@@ -46,13 +50,25 @@ callLLM llamaBin modelPath systemPrompt userPrompt = do
     `catch` \(e :: IOException) -> return $ Left $ "llama.cpp not found: " ++ show e
 
   case result of
-    Right text -> return $ Right $ cleanLLMOutput text
+    Right text -> return $ Right $ extractReply userPrompt text
     Left err -> return $ Left err
 
--- | Format prompt for TinyLlama-Chat format
-formatPrompt :: Text -> Text -> Text
-formatPrompt systemPrompt userPrompt =
-  "<|system|>\n" <> systemPrompt <> "\n<|user|>\n" <> userPrompt <> "\n<|assistant|>\n"
+-- | Extract the assistant reply from llama-cli's conversation-mode stdout.
+-- The stream is: banner noise, the user prompt echoed after a "> " marker,
+-- the reply, then a "[ Prompt: ... ]" stats trailer and "Exiting...".
+extractReply :: Text -> Text -> Text
+extractReply userPrompt out = cleanLLMOutput (T.unlines reply)
+  where
+    allLines = T.lines out
+    promptLineCount = length (T.lines userPrompt)
+    afterEcho = case break ("> " `T.isPrefixOf`) allLines of
+      -- No echo marker (unexpected build): keep everything before the trailer
+      (_, []) -> allLines
+      -- The echo spans the "> " line plus the remaining prompt lines
+      (_, _echoStart:rest) -> drop (promptLineCount - 1) rest
+    reply = takeWhile (not . isTrailer) afterEcho
+    isTrailer line =
+      "[ Prompt:" `T.isPrefixOf` T.strip line || T.strip line == "Exiting..."
 
 -- | Clean LLM output (remove extra whitespace, trailing artifacts)
 cleanLLMOutput :: Text -> Text
