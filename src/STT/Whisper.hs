@@ -3,11 +3,13 @@
 
 module STT.Whisper
   ( TranscriptionResult(..)
+  , PromptOptions(..)
   , WhisperCppResponse(..)
   , TranscriptSegment(..)
   , ResultInfo(..)
   , transcribeFile
   , transcribeFileWithConfig
+  , transcribeFileWithPrompt
   ) where
 
 import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode)
@@ -68,31 +70,41 @@ instance FromJSON ResultInfo where
 
 -- | Transcribe audio file using configuration
 transcribeFileWithConfig :: AppConfig -> FilePath -> IO (Either String TranscriptionResult)
-transcribeFileWithConfig config audioPath = do
+transcribeFileWithConfig config = transcribeFileWithPrompt config Nothing
+
+-- | Transcribe audio file using configuration, with an optional initial
+-- prompt to bias recognition (e.g. towards technical vocabulary)
+transcribeFileWithPrompt :: AppConfig -> Maybe Text -> FilePath -> IO (Either String TranscriptionResult)
+transcribeFileWithPrompt config initialPrompt audioPath = do
   deviceStr <- Config.getDeviceString (device config)
   let modelSizeStr = modelSizeToString (modelSize config)
       taskMode = task config
       langStr = maybe "auto" T.unpack (language config)
+      prompt = PromptOptions initialPrompt (whisperCarryPrompt config)
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr taskMode
+  transcribeFile audioPath modelSizeStr deviceStr langStr prompt taskMode
+
+-- | Initial prompt for whisper and whether to re-inject it every window
+data PromptOptions = PromptOptions !(Maybe Text) !Bool
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
-  :: FilePath     -- ^ Path to audio file
-  -> String       -- ^ Model size (tiny, base, small, medium, large)
-  -> String       -- ^ Device (cpu, cuda)
-  -> String       -- ^ Language (auto or language code)
-  -> Task         -- ^ Task mode
+  :: FilePath       -- ^ Path to audio file
+  -> String         -- ^ Model size (tiny, base, small, medium, large)
+  -> String         -- ^ Device (cpu, cuda)
+  -> String         -- ^ Language (auto or language code)
+  -> PromptOptions  -- ^ Initial prompt settings
+  -> Task           -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang taskMode =
+transcribeFile audioPath modelSz dev lang prompt taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSz dev lang False
-    Translate -> transcribeOnly audioPath modelSz dev lang True
-    Both -> transcribeBoth audioPath modelSz dev lang
+    Transcribe -> transcribeOnly audioPath modelSz dev lang prompt False
+    Translate -> transcribeOnly audioPath modelSz dev lang prompt True
+    Both -> transcribeBoth audioPath modelSz dev lang prompt
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
+transcribeOnly :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) shouldTranslate = do
   let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
@@ -100,9 +112,13 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
                  , "-l", lang
                  , "-oj"  -- Output JSON to file
                  ]
-      args = if shouldTranslate
-             then baseArgs ++ ["--translate"]
-             else baseArgs
+      promptArgs = case initialPrompt of
+        Nothing -> []
+        Just p -> ["--prompt", T.unpack p]
+                  ++ ["--carry-initial-prompt" | carryPrompt]
+      args = baseArgs
+             ++ promptArgs
+             ++ ["--translate" | shouldTranslate]
 
   -- Execute whisper.cpp
   (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/build/bin/whisper-cli" args ""
@@ -128,15 +144,15 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> String -> String -> String -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSz dev lang = do
+transcribeBoth :: FilePath -> String -> String -> String -> PromptOptions -> IO (Either String TranscriptionResult)
+transcribeBoth audioPath modelSz dev lang prompt = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSz dev lang False
+  transResult <- transcribeOnly audioPath modelSz dev lang prompt False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSz dev lang True
+      translateResult <- transcribeOnly audioPath modelSz dev lang prompt True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->

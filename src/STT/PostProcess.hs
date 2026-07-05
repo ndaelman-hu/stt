@@ -23,6 +23,7 @@ data ProcessingOptions = ProcessingOptions
   , extractTodos :: !Bool
   , llamaBinaryPath :: !FilePath
   , modelPath :: !FilePath
+  , vocabulary :: ![Text]
   } deriving (Show, Eq)
 
 -- | Result of processing
@@ -40,7 +41,7 @@ processTranscription opts original = do
   -- Clean text if requested
   (cleaned, cleanErr) <- if cleanText opts
     then do
-      result <- LLM.cleanText (llamaBinaryPath opts) (modelPath opts) original
+      result <- LLM.cleanTextWithVocab (llamaBinaryPath opts) (modelPath opts) (vocabulary opts) original
       case result of
         Right txt -> return (Just txt, [])
         Left err -> return (Nothing, ["Text cleaning failed: " ++ err])
@@ -66,14 +67,14 @@ processTranscription opts original = do
     }
 
 -- | Clean a transcription file
-cleanTranscriptionFile :: FilePath -> FilePath -> FilePath -> IO (Either String Text)
-cleanTranscriptionFile llamaBin modelPath filePath = do
+cleanTranscriptionFile :: FilePath -> FilePath -> [Text] -> FilePath -> IO (Either String Text)
+cleanTranscriptionFile llamaBin modelPath vocab filePath = do
   exists <- doesFileExist filePath
   if not exists
     then return $ Left $ "File not found: " ++ filePath
     else do
       content <- TIO.readFile filePath
-      LLM.cleanText llamaBin modelPath content
+      LLM.cleanTextWithVocab llamaBin modelPath vocab content
 
 -- | Extract TODOs from a transcription file
 extractTodosFromFile :: FilePath -> FilePath -> FilePath -> IO (Either String Text)

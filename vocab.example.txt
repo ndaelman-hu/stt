@@ -1,0 +1,15 @@
+# Technical vocabulary for whisper-hs
+# One term or phrase per line; lines starting with '#' are ignored.
+# Copy this file to vocab.txt and set VOCAB_FILE=vocab.txt in .env.
+whisper.cpp
+llama.cpp
+sherpa-onnx
+GGML
+GGUF
+quantization
+diarization
+Haskell
+cabal
+transformer
+tokenizer
+inference

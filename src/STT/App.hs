@@ -12,6 +12,7 @@ import Control.Monad (forever, when, unless)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (exitSuccess)
 import System.IO (hFlush, stdout)
@@ -28,6 +29,7 @@ import qualified STT.LLM as LLM
 import qualified STT.Models as Models
 import qualified STT.PostProcess as PostProcess
 import qualified STT.Markdown as Markdown
+import qualified STT.Vocab as Vocab
 
 -- | Main application loop with interactive menu
 runApp :: AppConfig -> IO ()
@@ -99,6 +101,7 @@ printConfig config = do
   putStrLn $ "  Keep Recordings: " ++ show (keepRecordings config)
   putStrLn $ "  LLM Model: " ++ llmModelPath config
   putStrLn $ "  Speaker Diarization: " ++ (if diarizationEnabled config then "Enabled" else "Disabled")
+  putStrLn $ "  Vocabulary File: " ++ fromMaybe "none" (vocabFilePath config)
 
 -- | Menu for recording and transcribing
 recordAndTranscribeMenu :: AppConfig -> IO ()
@@ -119,7 +122,9 @@ recordAndTranscribeMenu config = do
                  then Nothing
                  else readMaybe deviceInput
 
-  recordAndTranscribe config duration deviceId
+  sessionContext <- promptSessionContext config deviceId
+
+  recordAndTranscribe config duration deviceId sessionContext
 
 -- | Menu for transcribing existing files
 transcribeExistingMenu :: AppConfig -> IO ()
@@ -127,7 +132,11 @@ transcribeExistingMenu config = do
   putStr "Enter path to audio file: "
   hFlush stdout
   filePath <- getLine
-  transcribeExistingFile config filePath
+  putStr "Session context to bias recognition (press Enter to skip): "
+  hFlush stdout
+  contextInput <- getLine
+  let sessionContext = if null contextInput then Nothing else Just (T.pack contextInput)
+  transcribeExistingFile config sessionContext filePath
 
 -- | Menu for listing devices
 listDevicesMenu :: IO ()
@@ -142,8 +151,8 @@ listDevicesMenu = do
       putStrLn $ "  " ++ show (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
 
 -- | Record audio and transcribe it
-recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe Int -> IO ()
-recordAndTranscribe config duration deviceId = do
+recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe Int -> Maybe T.Text -> IO ()
+recordAndTranscribe config duration deviceId sessionContext = do
   -- Record audio
   maybeAudioPath <- Audio.recordAudio config duration deviceId
 
@@ -153,8 +162,9 @@ recordAndTranscribe config duration deviceId = do
       putStrLn $ "Audio saved to: " ++ audioPath
       putStrLn "Transcribing..."
 
-      -- Transcribe
-      result <- Whisper.transcribeFileWithConfig config audioPath
+      -- Transcribe, biasing recognition with vocabulary and session context
+      whisperPrompt <- buildPromptFromConfig config sessionContext
+      result <- Whisper.transcribeFileWithPrompt config whisperPrompt audioPath
 
       case result of
         Left err -> putStrLn $ "Transcription error: " ++ err
@@ -172,14 +182,15 @@ recordAndTranscribe config duration deviceId = do
             putStrLn $ "Removed temporary file: " ++ audioPath
 
 -- | Transcribe an existing audio file
-transcribeExistingFile :: AppConfig -> FilePath -> IO ()
-transcribeExistingFile config filePath = do
+transcribeExistingFile :: AppConfig -> Maybe T.Text -> FilePath -> IO ()
+transcribeExistingFile config sessionContext filePath = do
   exists <- doesFileExist filePath
   if not exists
     then putStrLn $ "File not found: " ++ filePath
     else do
       putStrLn "Transcribing..."
-      result <- Whisper.transcribeFileWithConfig config filePath
+      whisperPrompt <- buildPromptFromConfig config sessionContext
+      result <- Whisper.transcribeFileWithPrompt config whisperPrompt filePath
 
       case result of
         Left err -> putStrLn $ "Transcription error: " ++ err
@@ -221,9 +232,11 @@ cleanTranscriptionMenu config = do
   filePath <- getLine
 
   putStrLn "Cleaning transcription..."
+  vocab <- Vocab.loadVocabTerms (vocabFilePath config)
   result <- PostProcess.cleanTranscriptionFile
               (llmBinaryPath config)
               (llmModelPath config)
+              vocab
               filePath
 
   case result of
@@ -343,6 +356,67 @@ changeLlmModelMenu configRef = do
       putStrLn ""
       putStrLn "Updated configuration:"
       printConfig newConfig
+-- | Build whisper's initial prompt from the vocabulary file and session context
+buildPromptFromConfig :: AppConfig -> Maybe T.Text -> IO (Maybe T.Text)
+buildPromptFromConfig config sessionContext = do
+  vocab <- Vocab.loadVocabTerms (vocabFilePath config)
+  return $ Vocab.buildWhisperPrompt vocab sessionContext
+
+-- | Optionally collect a session context before recording: a sentence or two
+-- describing the topic and expected jargon, either typed or dictated
+promptSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+promptSessionContext config deviceId = do
+  putStrLn ""
+  putStrLn "Session context (biases recognition of names and technical terms):"
+  putStrLn "  1. None (default)"
+  putStrLn "  2. Type it"
+  putStrLn "  3. Dictate it (short recording)"
+  putStr "Choose an option (Enter to skip): "
+  hFlush stdout
+  choice <- getLine
+
+  case choice of
+    "2" -> do
+      putStr "Context: "
+      hFlush stdout
+      input <- getLine
+      return $ if null input then Nothing else Just (T.pack input)
+    "3" -> dictateSessionContext config deviceId
+    _ -> return Nothing
+
+-- | Record a short snippet, transcribe it, and use the text as session context
+dictateSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+dictateSessionContext config deviceId = do
+  putStrLn "Recording context (up to 20 seconds)..."
+  maybeAudioPath <- Audio.recordAudio config (Just 20) deviceId
+  case maybeAudioPath of
+    Nothing -> do
+      putStrLn "Context recording failed; continuing without context."
+      return Nothing
+    Just audioPath -> do
+      -- Bias the context snippet itself with the vocabulary file
+      vocabPrompt <- buildPromptFromConfig config Nothing
+      result <- Whisper.transcribeFileWithPrompt config vocabPrompt audioPath
+
+      -- The snippet is an aid, not a recording worth keeping
+      removeFile audioPath
+      removeIfExists (audioPath ++ ".json")
+
+      case result of
+        Left err -> do
+          putStrLn $ "Context transcription failed: " ++ err
+          return Nothing
+        Right transcription -> do
+          let contextText = Whisper.transText transcription
+          putStrLn $ "Transcribed context: " ++ T.unpack contextText
+          putStr "Accept? (Enter accepts, 'r' re-records, anything else discards): "
+          hFlush stdout
+          answer <- getLine
+          case answer of
+            "" -> return $ if T.null contextText then Nothing else Just contextText
+            "r" -> dictateSessionContext config deviceId
+            _ -> return Nothing
+
 -- | Remove a file if it exists (whisper's -oj sidecar may or may not be there)
 removeIfExists :: FilePath -> IO ()
 removeIfExists path = do
