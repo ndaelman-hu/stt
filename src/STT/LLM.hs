@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,9 +12,13 @@ module STT.LLM
   , parseRoleSuggestions
   ) where
 
+import Control.Concurrent.Async (concurrently)
+import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Data.Text (Text)
-import System.Process (readProcessWithExitCode)
+import qualified Data.Text.Encoding as TE
+import Data.Text.Encoding.Error (lenientDecode)
+import System.Process (createProcess, proc, waitForProcess, CreateProcess(..), StdStream(..))
 import System.Exit (ExitCode(..))
 import Control.Exception (catch, IOException)
 
@@ -47,14 +50,26 @@ callLLM llamaBin modelPath systemPrompt userPrompt = do
              , "-c", "4096"  -- Context size
              ]
 
-  result <- (readProcessWithExitCode llamaBin args "" >>= \case
-    (ExitSuccess, stdout, _) -> return $ Right $ T.pack stdout
-    (ExitFailure _, _, stderr) -> return $ Left $ "llama.cpp failed: " ++ stderr)
-    `catch` \(e :: IOException) -> return $ Left $ "llama.cpp not found: " ++ show e
+  result <- runLlamaBytes llamaBin args
 
   case result of
     Right text -> return $ Right $ extractReply userPrompt text
     Left err -> return $ Left err
+
+-- | Run llama-cli capturing raw bytes and decoding as UTF-8 leniently.
+-- Locale-based String IO would crash here: transcripts are multilingual,
+-- and byte-level BPE models can emit partial UTF-8 sequences mid-stream.
+runLlamaBytes :: FilePath -> [String] -> IO (Either String Text)
+runLlamaBytes llamaBin args =
+  (do
+    (_, Just hout, Just herr, ph) <- createProcess (proc llamaBin args)
+      { std_in = NoStream, std_out = CreatePipe, std_err = CreatePipe }
+    (out, err) <- concurrently (BS.hGetContents hout) (BS.hGetContents herr)
+    exitCode <- waitForProcess ph
+    return $ case exitCode of
+      ExitSuccess -> Right (TE.decodeUtf8With lenientDecode out)
+      ExitFailure _ -> Left $ "llama.cpp failed: " ++ T.unpack (TE.decodeUtf8With lenientDecode err))
+    `catch` \(e :: IOException) -> return $ Left $ "llama.cpp not found: " ++ show e
 
 -- | Extract the assistant reply from llama-cli's conversation-mode stdout.
 -- The stream is: banner noise, the user prompt echoed after a "> " marker,
