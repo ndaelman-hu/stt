@@ -112,13 +112,18 @@ if ! command -v cmake &> /dev/null; then
     echo "Warning: cmake not found; skipping speaker diarization setup."
     echo "Install cmake and re-run setup.sh to enable diarization."
 else
+    # v1.10.30 pins onnxruntime 1.17.1, which links against older libstdc++
+    # (GCC 9 compatible); newer sherpa-onnx bundles an onnxruntime that
+    # requires GCC 11+.
+    SHERPA_ONNX_VERSION=v1.10.30
     if [ ! -d "sherpa-onnx" ]; then
-        echo "Cloning sherpa-onnx..."
-        git clone https://github.com/k2-fsa/sherpa-onnx.git
+        echo "Cloning sherpa-onnx ($SHERPA_ONNX_VERSION)..."
+        git clone --depth 1 --branch "$SHERPA_ONNX_VERSION" https://github.com/k2-fsa/sherpa-onnx.git
     else
-        echo "sherpa-onnx already exists, updating..."
+        echo "sherpa-onnx already exists, pinning $SHERPA_ONNX_VERSION..."
         cd sherpa-onnx
-        git pull
+        git fetch --depth 1 origin tag "$SHERPA_ONNX_VERSION"
+        git checkout "$SHERPA_ONNX_VERSION"
         cd ..
     fi
 
