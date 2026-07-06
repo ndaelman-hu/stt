@@ -73,8 +73,12 @@ transcribeFileWithConfig config audioPath = do
   let modelSizeStr = modelSizeToString (modelSize config)
       taskMode = task config
       langStr = maybe "auto" T.unpack (language config)
+      -- Speaker alignment needs fine-grained segment timestamps; whisper
+      -- sometimes emits sentence-spanning segments (especially for languages
+      -- without word spacing), which caps how many speakers can be told apart
+      fineSegments = diarizationEnabled config
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr taskMode
+  transcribeFile audioPath modelSizeStr deviceStr langStr fineSegments taskMode
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
@@ -82,17 +86,18 @@ transcribeFile
   -> String       -- ^ Model size (tiny, base, small, medium, large)
   -> String       -- ^ Device (cpu, cuda)
   -> String       -- ^ Language (auto or language code)
+  -> Bool         -- ^ Split output into fine-grained segments (for diarization)
   -> Task         -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang taskMode =
+transcribeFile audioPath modelSz dev lang fineSegments taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSz dev lang False
-    Translate -> transcribeOnly audioPath modelSz dev lang True
-    Both -> transcribeBoth audioPath modelSz dev lang
+    Transcribe -> transcribeOnly audioPath modelSz dev lang fineSegments False
+    Translate -> transcribeOnly audioPath modelSz dev lang fineSegments True
+    Both -> transcribeBoth audioPath modelSz dev lang fineSegments
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
+transcribeOnly :: FilePath -> String -> String -> String -> Bool -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly audioPath modelSz _dev lang fineSegments shouldTranslate = do
   let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
@@ -100,9 +105,12 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
                  , "-l", lang
                  , "-oj"  -- Output JSON to file
                  ]
-      args = if shouldTranslate
-             then baseArgs ++ ["--translate"]
-             else baseArgs
+      -- -ml caps segment length (in tokens); segments are re-merged per
+      -- speaker turn later, so short segments never surface to the user
+      segmentArgs = if fineSegments then ["-ml", "24"] else []
+      args = baseArgs
+             ++ segmentArgs
+             ++ ["--translate" | shouldTranslate]
 
   -- Execute whisper.cpp
   (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/build/bin/whisper-cli" args ""
@@ -128,15 +136,15 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> String -> String -> String -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSz dev lang = do
+transcribeBoth :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
+transcribeBoth audioPath modelSz dev lang fineSegments = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSz dev lang False
+  transResult <- transcribeOnly audioPath modelSz dev lang fineSegments False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSz dev lang True
+      translateResult <- transcribeOnly audioPath modelSz dev lang fineSegments True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->
