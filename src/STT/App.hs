@@ -23,6 +23,8 @@ import STT.Config (AppConfig(..), Task(..))
 import qualified STT.Config as Config
 import qualified STT.Audio as Audio
 import qualified STT.Whisper as Whisper
+import qualified STT.Diarize as Diarize
+import qualified STT.LLM as LLM
 import qualified STT.Models as Models
 import qualified STT.PostProcess as PostProcess
 import qualified STT.Markdown as Markdown
@@ -52,14 +54,15 @@ runApp initialConfig = do
     putStrLn "  3. List audio devices"
     putStrLn "  4. Change language settings"
     putStrLn "  5. Change LLM model"
+    putStrLn "  6. Toggle speaker diarization"
     putStrLn ""
     putStrLn "Post-Processing:"
-    putStrLn "  6. Clean transcription file"
-    putStrLn "  7. Extract TODOs from file"
+    putStrLn "  7. Clean transcription file"
+    putStrLn "  8. Extract TODOs from file"
     putStrLn ""
-    putStrLn "  8. Quit"
+    putStrLn "  9. Quit"
     putStrLn ""
-    putStr "Choose an option (1-8): "
+    putStr "Choose an option (1-9): "
     hFlush stdout
 
     choice <- getLine
@@ -73,12 +76,13 @@ runApp initialConfig = do
       "3" -> listDevicesMenu
       "4" -> changeLanguageMenu configRef
       "5" -> changeLlmModelMenu configRef
-      "6" -> cleanTranscriptionMenu config
-      "7" -> extractTodosMenu config
-      "8" -> do
+      "6" -> toggleDiarizationMenu configRef
+      "7" -> cleanTranscriptionMenu config
+      "8" -> extractTodosMenu config
+      "9" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-8."
+      _ -> putStrLn "Invalid choice. Please choose 1-9."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
@@ -94,6 +98,7 @@ printConfig config = do
   putStrLn $ "  Task: " ++ show (task config)
   putStrLn $ "  Keep Recordings: " ++ show (keepRecordings config)
   putStrLn $ "  LLM Model: " ++ llmModelPath config
+  putStrLn $ "  Speaker Diarization: " ++ (if diarizationEnabled config then "Enabled" else "Disabled")
 
 -- | Menu for recording and transcribing
 recordAndTranscribeMenu :: AppConfig -> IO ()
@@ -156,9 +161,14 @@ recordAndTranscribe config duration deviceId = do
         Right transcription -> do
           displayTranscription config transcription
 
-          -- Clean up audio file if configured
+          -- Diarization needs the WAV, so it must run before cleanup
+          when (diarizationEnabled config) $
+            diarizeAndDisplay config audioPath transcription
+
+          -- Clean up audio file and whisper JSON sidecar if configured
           unless (keepRecordings config) $ do
             removeFile audioPath
+            removeIfExists (audioPath ++ ".json")
             putStrLn $ "Removed temporary file: " ++ audioPath
 
 -- | Transcribe an existing audio file
@@ -173,7 +183,10 @@ transcribeExistingFile config filePath = do
 
       case result of
         Left err -> putStrLn $ "Transcription error: " ++ err
-        Right transcription -> displayTranscription config transcription
+        Right transcription -> do
+          displayTranscription config transcription
+          when (diarizationEnabled config) $
+            diarizeAndDisplay config filePath transcription
 
 -- | Display transcription results
 displayTranscription :: AppConfig -> Whisper.TranscriptionResult -> IO ()
@@ -249,6 +262,7 @@ extractTodosMenu config = do
             { PostProcess.originalText = originalText
             , PostProcess.cleanedText = Nothing
             , PostProcess.todos = Just todos
+            , PostProcess.speakerTranscript = Nothing
             , PostProcess.processingErrors = []
             }
 
@@ -329,6 +343,112 @@ changeLlmModelMenu configRef = do
       putStrLn ""
       putStrLn "Updated configuration:"
       printConfig newConfig
+-- | Remove a file if it exists (whisper's -oj sidecar may or may not be there)
+removeIfExists :: FilePath -> IO ()
+removeIfExists path = do
+  exists <- doesFileExist path
+  when exists $ removeFile path
+
+-- | Run diarization, let the LLM suggest speaker roles, confirm them with
+-- the user, then display and save the speaker-labeled transcript
+diarizeAndDisplay :: AppConfig -> FilePath -> Whisper.TranscriptionResult -> IO ()
+diarizeAndDisplay config audioPath transcription = do
+  available <- Diarize.checkDiarizationAvailable config
+  case available of
+    Left hint -> putStrLn hint
+    Right () -> do
+      putStrLn "Identifying speakers..."
+      result <- Diarize.runDiarization config audioPath
+      case result of
+        Left err -> putStrLn $ "Diarization error: " ++ err
+        Right intervals -> do
+          let turns = Diarize.assignSpeakers intervals (Whisper.transSegments transcription)
+              speakers = Diarize.speakerLabels turns
+
+          putStrLn "\n========================================="
+          putStrLn "Speaker Transcript"
+          putStrLn "========================================="
+          TIO.putStrLn $ Diarize.renderSpeakerTurns [] turns
+
+          suggestions <- if llmEnableCleaning config
+            then do
+              putStrLn "\nSuggesting speaker roles..."
+              suggested <- LLM.suggestSpeakerRoles
+                             (llmBinaryPath config)
+                             (llmModelPath config)
+                             speakers
+                             (Diarize.renderSpeakerTurns [] turns)
+              case suggested of
+                Left err -> do
+                  putStrLn $ "Role suggestion failed: " ++ err
+                  return []
+                Right roles -> return roles
+            else return []
+
+          roleMap <- confirmRoles speakers suggestions turns
+          let finalTranscript = Diarize.renderSpeakerTurns roleMap turns
+
+          putStrLn "\n========================================="
+          putStrLn "Speaker Transcript (final)"
+          putStrLn "========================================="
+          TIO.putStrLn finalTranscript
+
+          -- Save alongside a timestamp so repeated runs don't clobber
+          timestamp <- formatTime defaultTimeLocale "%Y%m%d_%H%M%S" <$> getCurrentTime
+          let outputPath = "transcript_speakers_" ++ timestamp ++ ".md"
+              processedResult = PostProcess.ProcessedResult
+                { PostProcess.originalText = Whisper.transText transcription
+                , PostProcess.cleanedText = Nothing
+                , PostProcess.todos = Nothing
+                , PostProcess.speakerTranscript = Just finalTranscript
+                , PostProcess.processingErrors = []
+                }
+          Markdown.saveMeetingMinutes outputPath processedResult
+
+-- | Ask the user to confirm or override each suggested speaker role
+confirmRoles :: [T.Text] -> [(T.Text, T.Text)] -> [Diarize.SpeakerTurn] -> IO [(T.Text, T.Text)]
+confirmRoles speakers suggestions turns = do
+  putStrLn "\nAssign speaker roles (Enter accepts the suggestion, '-' keeps the plain label):"
+  concat <$> mapM askOne speakers
+  where
+    askOne speaker = do
+      let suggestion = lookup speaker suggestions
+          excerpt = case [Diarize.stText t | t <- turns, Diarize.stSpeaker t == speaker] of
+            (firstUtterance:_) -> T.take 80 firstUtterance
+            [] -> ""
+      putStrLn ""
+      putStrLn $ T.unpack speaker ++ ": \"" ++ T.unpack excerpt ++ "...\""
+      case suggestion of
+        Just role -> putStr $ "  Role [" ++ T.unpack role ++ "]: "
+        Nothing -> putStr "  Role (Enter to keep plain label): "
+      hFlush stdout
+      input <- getLine
+      return $ case (input, suggestion) of
+        ("-", _) -> []
+        ("", Just role) -> [(speaker, role)]
+        ("", Nothing) -> []
+        (typed, _) -> [(speaker, T.pack typed)]
+
+-- | Menu for toggling speaker diarization
+toggleDiarizationMenu :: IORef AppConfig -> IO ()
+toggleDiarizationMenu configRef = do
+  config <- readIORef configRef
+  let newEnabled = not (diarizationEnabled config)
+      newConfig = config { diarizationEnabled = newEnabled }
+
+  when newEnabled $ do
+    available <- Diarize.checkDiarizationAvailable config
+    case available of
+      Left hint -> putStrLn hint
+      Right () -> return ()
+    when (Config.unSampleRate (sampleRate config) /= 16000) $
+      putStrLn "Warning: sherpa-onnx expects 16 kHz audio; set SAMPLE_RATE=16000 for recordings you want to diarize."
+
+  writeIORef configRef newConfig
+  putStrLn $ "Speaker diarization " ++ (if newEnabled then "enabled." else "disabled.")
+  putStrLn ""
+  putStrLn "Updated configuration:"
+  printConfig newConfig
 
 -- | Menu for changing language settings
 changeLanguageMenu :: IORef AppConfig -> IO ()
