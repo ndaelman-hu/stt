@@ -3,11 +3,13 @@
 
 module STT.Whisper
   ( TranscriptionResult(..)
+  , PromptOptions(..)
   , WhisperCppResponse(..)
   , TranscriptSegment(..)
   , ResultInfo(..)
   , transcribeFile
   , transcribeFileWithConfig
+  , transcribeFileWithPrompt
   ) where
 
 import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode)
@@ -68,36 +70,46 @@ instance FromJSON ResultInfo where
 
 -- | Transcribe audio file using configuration
 transcribeFileWithConfig :: AppConfig -> FilePath -> IO (Either String TranscriptionResult)
-transcribeFileWithConfig config audioPath = do
+transcribeFileWithConfig config = transcribeFileWithPrompt config Nothing
+
+-- | Transcribe audio file using configuration, with an optional initial
+-- prompt to bias recognition (e.g. towards technical vocabulary)
+transcribeFileWithPrompt :: AppConfig -> Maybe Text -> FilePath -> IO (Either String TranscriptionResult)
+transcribeFileWithPrompt config initialPrompt audioPath = do
   deviceStr <- Config.getDeviceString (device config)
   let modelSizeStr = modelSizeToString (modelSize config)
       taskMode = task config
       langStr = maybe "auto" T.unpack (language config)
+      prompt = PromptOptions initialPrompt (whisperCarryPrompt config)
       -- Speaker alignment needs fine-grained segment timestamps; whisper
       -- sometimes emits sentence-spanning segments (especially for languages
       -- without word spacing), which caps how many speakers can be told apart
       fineSegments = diarizationEnabled config
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr fineSegments taskMode
+  transcribeFile audioPath modelSizeStr deviceStr langStr prompt fineSegments taskMode
+
+-- | Initial prompt for whisper and whether to re-inject it every window
+data PromptOptions = PromptOptions !(Maybe Text) !Bool
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
-  :: FilePath     -- ^ Path to audio file
-  -> String       -- ^ Model size (tiny, base, small, medium, large)
-  -> String       -- ^ Device (cpu, cuda)
-  -> String       -- ^ Language (auto or language code)
-  -> Bool         -- ^ Split output into fine-grained segments (for diarization)
-  -> Task         -- ^ Task mode
+  :: FilePath       -- ^ Path to audio file
+  -> String         -- ^ Model size (tiny, base, small, medium, large)
+  -> String         -- ^ Device (cpu, cuda)
+  -> String         -- ^ Language (auto or language code)
+  -> PromptOptions  -- ^ Initial prompt settings
+  -> Bool           -- ^ Split output into fine-grained segments (for diarization)
+  -> Task           -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang fineSegments taskMode =
+transcribeFile audioPath modelSz dev lang prompt fineSegments taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSz dev lang fineSegments False
-    Translate -> transcribeOnly audioPath modelSz dev lang fineSegments True
-    Both -> transcribeBoth audioPath modelSz dev lang fineSegments
+    Transcribe -> transcribeOnly audioPath modelSz dev lang prompt fineSegments False
+    Translate -> transcribeOnly audioPath modelSz dev lang prompt fineSegments True
+    Both -> transcribeBoth audioPath modelSz dev lang prompt fineSegments
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> String -> String -> String -> Bool -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSz _dev lang fineSegments shouldTranslate = do
+transcribeOnly :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
   let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
@@ -105,10 +117,15 @@ transcribeOnly audioPath modelSz _dev lang fineSegments shouldTranslate = do
                  , "-l", lang
                  , "-oj"  -- Output JSON to file
                  ]
+      promptArgs = case initialPrompt of
+        Nothing -> []
+        Just p -> ["--prompt", T.unpack p]
+                  ++ ["--carry-initial-prompt" | carryPrompt]
       -- -ml caps segment length (in tokens); segments are re-merged per
       -- speaker turn later, so short segments never surface to the user
       segmentArgs = if fineSegments then ["-ml", "24"] else []
       args = baseArgs
+             ++ promptArgs
              ++ segmentArgs
              ++ ["--translate" | shouldTranslate]
 
@@ -136,15 +153,15 @@ transcribeOnly audioPath modelSz _dev lang fineSegments shouldTranslate = do
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSz dev lang fineSegments = do
+transcribeBoth :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
+transcribeBoth audioPath modelSz dev lang prompt fineSegments = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSz dev lang fineSegments False
+  transResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSz dev lang fineSegments True
+      translateResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->

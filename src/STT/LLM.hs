@@ -6,6 +6,7 @@ module STT.LLM
   , callLLM
   , extractReply
   , cleanText
+  , cleanTextWithVocab
   , extractTodos
   , suggestSpeakerRoles
   , parseRoleSuggestions
@@ -93,8 +94,19 @@ cleanLLMOutput = T.strip . T.unlines . filter (not . T.null) . map T.strip . T.l
 
 -- | Clean and fix grammar/punctuation in text
 cleanText :: FilePath -> FilePath -> Text -> IO (Either String Text)
-cleanText llamaBin modelPath rawText = do
-  let systemPrompt = "You are a text correction assistant. Fix grammar, add proper punctuation and capitalization. Preserve the original meaning and technical terms. Output only the corrected text without any explanations."
+cleanText llamaBin modelPath = cleanTextWithVocab llamaBin modelPath []
+
+-- | Clean text, additionally correcting misrecognized technical terms
+-- towards the given vocabulary spellings
+cleanTextWithVocab :: FilePath -> FilePath -> [Text] -> Text -> IO (Either String Text)
+cleanTextWithVocab llamaBin modelPath vocab rawText = do
+  let basePrompt = "You are a text correction assistant. Fix grammar, add proper punctuation and capitalization. Preserve the original meaning and technical terms. Output only the corrected text without any explanations."
+      -- Cap the injected list: the transcript itself must fit in -c 4096
+      vocabHint = if null vocab
+        then ""
+        else " The following technical terms may appear misrecognized; when a word sounds similar to one of these, correct it to this exact spelling: "
+             <> T.take 1000 (T.intercalate ", " vocab) <> "."
+      systemPrompt = basePrompt <> vocabHint
       userPrompt = "Fix this transcription:\n\n" <> rawText
 
   callLLM llamaBin modelPath systemPrompt userPrompt

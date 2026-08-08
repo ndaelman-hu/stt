@@ -121,6 +121,9 @@ data AppConfig = AppConfig
   , llmModelPath :: !FilePath
   , llmEnableCleaning :: !Bool
   , llmExtractTodos :: !Bool
+  -- Vocabulary / context prompt settings
+  , vocabFilePath :: !(Maybe FilePath)
+  , whisperCarryPrompt :: !Bool
   -- Speaker diarization settings
   , diarizationEnabled :: !Bool
   , diarizeBinaryPath :: !FilePath
@@ -146,6 +149,9 @@ defaultAppConfig = AppConfig
   , llmModelPath = "llama.cpp/models/tinyllama-1.1b-chat.gguf"
   , llmEnableCleaning = True
   , llmExtractTodos = False
+  -- Vocabulary defaults
+  , vocabFilePath = Nothing
+  , whisperCarryPrompt = True
   -- Diarization defaults
   , diarizationEnabled = False
   , diarizeBinaryPath = "sherpa-onnx/build/bin/sherpa-onnx-offline-speaker-diarization"
@@ -178,6 +184,10 @@ loadConfig envFile = do
   llmCleaning' <- readEnvWithDefault "LLM_ENABLE_CLEANING" (llmEnableCleaning defaultAppConfig) parseBool
   llmTodos' <- readEnvWithDefault "LLM_EXTRACT_TODOS" (llmExtractTodos defaultAppConfig) parseBool
 
+  -- Vocabulary settings
+  vocabFile' <- (>>= nonEmpty) <$> lookupEnv "VOCAB_FILE"
+  carryPrompt' <- readEnvWithDefault "WHISPER_CARRY_PROMPT" (whisperCarryPrompt defaultAppConfig) parseBool
+
   -- Diarization settings
   diarEnabled' <- readEnvWithDefault "DIARIZATION_ENABLED" (diarizationEnabled defaultAppConfig) parseBool
   diarBin' <- readEnvWithDefault "DIARIZE_BINARY_PATH" (diarizeBinaryPath defaultAppConfig) Just
@@ -199,6 +209,8 @@ loadConfig envFile = do
     , llmModelPath = llmModelPath'
     , llmEnableCleaning = llmCleaning'
     , llmExtractTodos = llmTodos'
+    , vocabFilePath = vocabFile'
+    , whisperCarryPrompt = carryPrompt'
     , diarizationEnabled = diarEnabled'
     , diarizeBinaryPath = diarBin'
     , diarizeSegModelPath = diarSegModel'
@@ -206,6 +218,11 @@ loadConfig envFile = do
     , diarizeNumSpeakers = diarSpeakers'
     , diarizeClusterThreshold = diarThreshold'
     }
+
+-- | Treat an empty string as unset
+nonEmpty :: String -> Maybe String
+nonEmpty "" = Nothing
+nonEmpty s = Just s
 
 -- | Read environment variable with default and parser
 readEnvWithDefault :: String -> a -> (String -> Maybe a) -> IO a

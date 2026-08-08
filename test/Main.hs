@@ -13,6 +13,7 @@ import STT.Config
 import STT.Diarize
 import STT.LLM (extractReply, parseRoleSuggestions)
 import qualified STT.Models as Models
+import STT.Vocab
 import STT.Whisper (WhisperCppResponse(..), TranscriptSegment(..), ResultInfo(..))
 
 main :: IO ()
@@ -27,6 +28,7 @@ tests = testGroup "Whisper-HS Tests"
   , extractReplyTests
   , diarizationTests
   , roleSuggestionTests
+  , vocabTests
   ]
 
 -- | Test configuration parsers
@@ -232,6 +234,54 @@ diarizationTests = testGroup "Diarization"
   ]
   where
     seg t fromMs toMs = TranscriptSegment t (Just fromMs) (Just toMs)
+
+-- | Test vocabulary loading and whisper prompt construction
+vocabTests :: TestTree
+vocabTests = testGroup "Vocabulary"
+  [ testGroup "loadVocabTerms"
+      [ testCase "returns nothing when no file configured" $ do
+          terms <- loadVocabTerms Nothing
+          terms @?= []
+      , testCase "missing file degrades to no vocabulary" $ do
+          terms <- loadVocabTerms (Just "test/fixtures/does-not-exist.txt")
+          terms @?= []
+      , testCase "parses example file, skipping comments and blanks" $ do
+          terms <- loadVocabTerms (Just "vocab.example.txt")
+          length terms @?= 12
+          head terms @?= "whisper.cpp"
+      ]
+
+  , testGroup "buildWhisperPrompt"
+      [ testCase "empty inputs yield no prompt" $
+          buildWhisperPrompt [] Nothing @?= Nothing
+      , testCase "blank context yields no prompt" $
+          buildWhisperPrompt [] (Just "   ") @?= Nothing
+      , testCase "context only" $
+          buildWhisperPrompt [] (Just "A talk about GGML quantization")
+            @?= Just "Context: A talk about GGML quantization."
+      , testCase "vocabulary only" $
+          buildWhisperPrompt ["GGML", "GGUF"] Nothing
+            @?= Just "Vocabulary: GGML, GGUF."
+      , testCase "context precedes vocabulary" $
+          buildWhisperPrompt ["GGML"] (Just "Weekly sync.")
+            @?= Just "Context: Weekly sync. Vocabulary: GGML."
+      , testCase "stays within the token budget without splitting terms" $ do
+          let longTerm = T.replicate 40 "x"  -- ~10 tokens each
+              manyTerms = replicate 100 longTerm
+              prompt = buildWhisperPrompt manyTerms Nothing
+          case prompt of
+            Nothing -> assertFailure "expected a prompt"
+            Just p -> do
+              assertBool "within budget" (estimateTokens p <= promptTokenBudget)
+              assertBool "keeps whole terms" (T.isSuffixOf (longTerm <> ".") p)
+      , testCase "session context survives even with a huge vocabulary" $ do
+          let manyTerms = replicate 500 (T.replicate 40 "x")
+              prompt = buildWhisperPrompt manyTerms (Just "The important context")
+          case prompt of
+            Nothing -> assertFailure "expected a prompt"
+            Just p -> assertBool "context kept" (T.isPrefixOf "Context: The important context." p)
+      ]
+  ]
 
 -- | Test lenient parsing of LLM role suggestions
 roleSuggestionTests :: TestTree
