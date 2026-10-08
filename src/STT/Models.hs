@@ -7,8 +7,10 @@ module STT.Models
   ( ModelSpec(..)
   , knownModels
   , knownWhisperModels
+  , knownDiarizationModels
   , modelsDir
   , whisperModelsDir
+  , diarizationModelsDir
   , modelPath
   , resolveWhisperModel
   , isInstalled
@@ -45,6 +47,33 @@ modelsDir = "llama.cpp/models"
 -- | Where whisper (GGML) models live
 whisperModelsDir :: FilePath
 whisperModelsDir = "whisper.cpp/models"
+
+-- | Where sherpa-onnx diarization models live
+diarizationModelsDir :: FilePath
+diarizationModelsDir = "sherpa-onnx/models"
+
+-- | Curated speaker-embedding models for diarization, from the sherpa-onnx
+-- release. The embedding model decides how reliably one voice stays one
+-- cluster, so it should match the language of the recordings.
+knownDiarizationModels :: [ModelSpec]
+knownDiarizationModels =
+  [ embeddingModel "wespeaker-campp-voxceleb" "WeSpeaker CAM++ (VoxCeleb)" "wespeaker_en_voxceleb_CAM++.onnx" 28
+      "default: trained on English VoxCeleb, robust for European languages"
+  , embeddingModel "3dspeaker-campp-zh-en" "3D-Speaker CAM++ (Mandarin + English)" "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx" 27
+      "bilingual Mandarin/English training data"
+  , embeddingModel "nemo-titanet-small" "NVIDIA TitaNet small (English)" "nemo_en_titanet_small.onnx" 39
+      "alternative English model"
+  ]
+  where
+    embeddingModel key label file sizeMB notes = ModelSpec
+      { modelKey = key
+      , modelLabel = label
+      , modelDir = diarizationModelsDir
+      , modelFile = file
+      , modelUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/" ++ file
+      , modelSizeMB = sizeMB
+      , modelNotes = notes
+      }
 
 -- | Curated whisper models, ordered small to large. Names match the
 -- whisper.cpp release files (ggml-<name>.bin), so 'resolveWhisperModel'
@@ -135,9 +164,11 @@ modelPath spec = modelDir spec </> modelFile spec
 isInstalled :: ModelSpec -> IO Bool
 isInstalled = doesFileExist . modelPath
 
--- | Human-readable size, e.g. "0.7 GB"
+-- | Human-readable size, e.g. "28 MB" or "0.7 GB"
 formatSize :: Int -> String
-formatSize mb = printf "%.1f GB" (fromIntegral mb / 1024 :: Double)
+formatSize mb
+  | mb < 1024 = show mb ++ " MB"
+  | otherwise = printf "%.1f GB" (fromIntegral mb / 1024 :: Double)
 
 -- | Download a model with wget or curl (whichever is available), showing
 -- their progress output. Downloads go to a ".part" file first so an

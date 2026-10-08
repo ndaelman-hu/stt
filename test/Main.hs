@@ -293,6 +293,41 @@ diarizationTests = testGroup "Diarization"
           map stSpeaker (assignSpeakers intervals segments) @?= ["Speaker 1"]
       ]
 
+  , testGroup "smoothShortTurns"
+      [ testCase "a short turn between two turns of one speaker is absorbed" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 10 "Long."
+            , SpeakerTurn "B" 10 10.8 "Glitch."
+            , SpeakerTurn "A" 10.8 20 "Long again."
+            ]) @?= ["A", "A", "A"]
+      , testCase "a short opening turn joins the long turn after it" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "B" 0 0.9 "Uh."
+            , SpeakerTurn "A" 0.9 12 "Long."
+            ]) @?= ["A", "A"]
+      , testCase "a short turn between two different speakers is kept" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 10 "Long."
+            , SpeakerTurn "C" 10 10.8 "Yes."
+            , SpeakerTurn "B" 10.8 20 "Long."
+            ]) @?= ["A", "C", "B"]
+      , testCase "long turns are untouched" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 5 "One.", SpeakerTurn "B" 5 10 "Two.", SpeakerTurn "A" 10 15 "Three." ])
+            @?= ["A", "B", "A"]
+      , testCase "assignSpeakers merges a glitch so the phantom speaker disappears" $ do
+          let intervals = [ SpeakerInterval 0 10 "speaker_00"
+                          , SpeakerInterval 10 10.8 "speaker_01"
+                          , SpeakerInterval 10.8 20 "speaker_00"
+                          ]
+              segments = [ seg " First part." 0 10000
+                         , seg " glitch" 10000 10800
+                         , seg " second part." 10800 20000
+                         ]
+          assignSpeakers intervals segments
+            @?= [SpeakerTurn "Speaker 1" 0 20 "First part. glitch second part."]
+      ]
+
   , testGroup "renderSpeakerTurns"
       [ testCase "applies confirmed roles, keeping labels without one" $ do
           let turns = [ SpeakerTurn "Speaker 1" 0 5 "Hello."

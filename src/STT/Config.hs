@@ -164,9 +164,9 @@ defaultAppConfig = AppConfig
   , diarizationEnabled = True
   , diarizeBinaryPath = "sherpa-onnx/build/bin/sherpa-onnx-offline-speaker-diarization"
   , diarizeSegModelPath = "sherpa-onnx/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
-  , diarizeEmbModelPath = "sherpa-onnx/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+  , diarizeEmbModelPath = "sherpa-onnx/models/wespeaker_en_voxceleb_CAM++.onnx"
   , diarizeNumSpeakers = Nothing
-  , diarizeClusterThreshold = 0.5
+  , diarizeClusterThreshold = 0.7
   }
 
 -- | Load configuration from .env file

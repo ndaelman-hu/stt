@@ -15,7 +15,7 @@ WHISPER_MODEL="${1:-base}"  # Default to base model
 LLAMA_MODEL_URL="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 # Note: "recongition" is a genuine typo in the upstream sherpa-onnx release tag
 DIARIZE_SEG_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
-DIARIZE_EMB_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+DIARIZE_EMB_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx"
 
 echo "Step 1/6: Checking system dependencies..."
 # Check for required tools

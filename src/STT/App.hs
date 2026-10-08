@@ -8,8 +8,9 @@ module STT.App
   , extractTodosMenu
   ) where
 
-import Control.Monad (forever, when, unless)
+import Control.Monad (forever, when, unless, void)
 import Data.Char (toLower)
+import Data.List (find)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -372,21 +373,8 @@ modelChooserMenu chooser configRef = do
 
     selectModel spec = do
       installed <- Models.isInstalled spec
-      if installed
-        then setValue (chooserValue chooser spec)
-        else do
-          putStr $ "Download " ++ Models.modelLabel spec
-                ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
-                ++ ")? (Enter to download, anything else cancels): "
-          hFlush stdout
-          answer <- getLine
-          if null answer
-            then do
-              result <- Models.downloadModel spec
-              case result of
-                Left err -> putStrLn err
-                Right _ -> setValue (chooserValue chooser spec)
-            else putStrLn "Download cancelled."
+      ready <- if installed then return True else promptDownload spec
+      when ready $ setValue (chooserValue chooser spec)
 
     selectPath path = do
       exists <- doesFileExist path
@@ -473,6 +461,7 @@ removeIfExists path = do
 -- the user, then display and save the speaker-labeled transcript
 diarizeAndDisplay :: AppConfig -> FilePath -> Whisper.TranscriptionResult -> IO ()
 diarizeAndDisplay config audioPath transcription = do
+  ensureEmbeddingModel config
   available <- Diarize.checkDiarizationAvailable config
   case available of
     Left hint -> putStrLn hint
@@ -525,6 +514,34 @@ diarizeAndDisplay config audioPath transcription = do
                 }
           Markdown.saveMeetingMinutes outputPath processedResult
 
+-- | Offer to download the configured speaker-embedding model when it is one
+-- of the curated ones and not installed yet
+ensureEmbeddingModel :: AppConfig -> IO ()
+ensureEmbeddingModel config =
+  case find ((== diarizeEmbModelPath config) . Models.modelPath) Models.knownDiarizationModels of
+    Nothing -> return ()
+    Just spec -> do
+      installed <- Models.isInstalled spec
+      unless installed $ do
+        putStrLn $ "Speaker embedding model not installed: " ++ Models.modelPath spec
+        void (promptDownload spec)
+
+-- | Ask before downloading a model; True when it is installed afterwards
+promptDownload :: Models.ModelSpec -> IO Bool
+promptDownload spec = do
+  putStr $ "Download " ++ Models.modelLabel spec
+        ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
+        ++ ")? (Enter to download, anything else cancels): "
+  hFlush stdout
+  answer <- getLine
+  if null answer
+    then do
+      result <- Models.downloadModel spec
+      case result of
+        Left err -> putStrLn err >> return False
+        Right _ -> return True
+    else putStrLn "Download cancelled." >> return False
+
 -- | Ask the user to confirm or override each suggested speaker role
 confirmRoles :: [T.Text] -> [(T.Text, T.Text)] -> [Diarize.SpeakerTurn] -> IO [(T.Text, T.Text)]
 confirmRoles speakers suggestions turns = do
@@ -557,6 +574,7 @@ toggleDiarizationMenu configRef = do
       newConfig = config { diarizationEnabled = newEnabled }
 
   when newEnabled $ do
+    ensureEmbeddingModel config
     available <- Diarize.checkDiarizationAvailable config
     case available of
       Left hint -> putStrLn hint
