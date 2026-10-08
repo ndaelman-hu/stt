@@ -6,7 +6,6 @@
 module STT.Config
   ( -- * Configuration Types
     AppConfig(..)
-  , ModelSize(..)
   , Device(..)
   , StopSignal(..)
   , Task(..)
@@ -25,7 +24,8 @@ module STT.Config
   , mkMinutes
 
     -- * Parsers (for testing)
-  , parseModelSize
+  , parseWhisperModel
+  , isLanguageCode
   , parseDevice
   , parseStopSignal
   , parseTask
@@ -37,7 +37,9 @@ module STT.Config
 import Data.Aeson (FromJSON(..), ToJSON)
 import qualified Data.Text as T
 import Data.Text (Text)
-import Data.Char (isAsciiUpper)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isSpace)
+import Data.List (isSuffixOf)
+import Data.Maybe (fromMaybe)
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 import qualified Configuration.Dotenv as Dotenv
@@ -45,18 +47,6 @@ import Text.Read (readMaybe)
 import Control.Exception (catch, IOException)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
-
--- | Whisper model sizes
-data ModelSize
-  = Tiny
-  | Base
-  | Small
-  | Medium
-  | Large
-  deriving (Show, Read, Eq, Enum, Bounded, Generic)
-
-instance FromJSON ModelSize
-instance ToJSON ModelSize
 
 -- | Compute device options
 data Device
@@ -108,7 +98,8 @@ mkMinutes mins
 
 -- | Application configuration
 data AppConfig = AppConfig
-  { modelSize :: !ModelSize
+  { whisperModel :: !String          -- ^ whisper.cpp model name or GGML file path
+  , whisperThreads :: !(Maybe Int)   -- ^ CPU threads for whisper; Nothing = derive from the machine
   , device :: !Device
   , sampleRate :: !SampleRate
   , maxDurationMinutes :: !Minutes
@@ -137,7 +128,8 @@ data AppConfig = AppConfig
 -- | Default configuration values
 defaultAppConfig :: AppConfig
 defaultAppConfig = AppConfig
-  { modelSize = Base
+  { whisperModel = "base"
+  , whisperThreads = Nothing
   , device = Auto
   , sampleRate = SampleRate 16000
   , maxDurationMinutes = Minutes 90
@@ -155,7 +147,7 @@ defaultAppConfig = AppConfig
   , vocabFilePath = Nothing
   , whisperCarryPrompt = True
   -- Diarization defaults
-  , diarizationEnabled = False
+  , diarizationEnabled = True
   , diarizeBinaryPath = "sherpa-onnx/build/bin/sherpa-onnx-offline-speaker-diarization"
   , diarizeSegModelPath = "sherpa-onnx/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
   , diarizeEmbModelPath = "sherpa-onnx/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
@@ -170,13 +162,18 @@ loadConfig envFile = do
   _ <- Dotenv.loadFile (Dotenv.defaultConfig { Dotenv.configPath = [envFile] })
        `catch` \(_ :: IOException) -> return ()
 
-  -- Read environment variables with defaults
-  modelSize' <- readEnvWithDefault "MODEL_SIZE" (modelSize defaultAppConfig) parseModelSize
+  -- Read environment variables with defaults.
+  -- WHISPER_MODEL supersedes MODEL_SIZE, which older .env files still set;
+  -- the old variable is honoured as the fallback so they keep working.
+  legacyModel <- (>>= parseWhisperModel) <$> lookupEnv "MODEL_SIZE"
+  whisperModel' <- readEnvWithDefault "WHISPER_MODEL"
+                     (fromMaybe (whisperModel defaultAppConfig) legacyModel) parseWhisperModel
+  whisperThreads' <- readEnvWithDefault "WHISPER_THREADS" (whisperThreads defaultAppConfig) (fmap Just . parsePositiveInt)
   device' <- readEnvWithDefault "DEVICE" (device defaultAppConfig) parseDevice
   sampleRate' <- readEnvWithDefault "SAMPLE_RATE" (sampleRate defaultAppConfig) parseSampleRate
   maxDuration' <- readEnvWithDefault "MAX_DURATION_MINUTES" (maxDurationMinutes defaultAppConfig) parseMinutes
   stopSignal' <- readEnvWithDefault "STOP_SIGNAL" (stopSignal defaultAppConfig) parseStopSignal
-  language' <- fmap T.pack <$> lookupEnv "LANGUAGE"
+  language' <- readLanguage
   task' <- readEnvWithDefault "TASK" (task defaultAppConfig) parseTask
   keepRecordings' <- readEnvWithDefault "KEEP_RECORDINGS" (keepRecordings defaultAppConfig) parseBool
   whisperBin' <- readEnvWithDefault "WHISPER_BINARY_PATH" (whisperBinaryPath defaultAppConfig) Just
@@ -200,7 +197,8 @@ loadConfig envFile = do
   diarThreshold' <- readEnvWithDefault "DIARIZE_CLUSTER_THRESHOLD" (diarizeClusterThreshold defaultAppConfig) parseDouble
 
   return AppConfig
-    { modelSize = modelSize'
+    { whisperModel = whisperModel'
+    , whisperThreads = whisperThreads'
     , device = device'
     , sampleRate = sampleRate'
     , maxDurationMinutes = maxDuration'
@@ -223,6 +221,26 @@ loadConfig envFile = do
     , diarizeClusterThreshold = diarThreshold'
     }
 
+-- | Read the transcription language. LANGUAGE doubles as glibc's locale
+-- variable (Debian desktops export e.g. "en_US:en"), which the dev shell
+-- inherits and whisper rejects, so only plausible whisper codes are taken.
+readLanguage :: IO (Maybe Text)
+readLanguage = do
+  raw <- (>>= nonEmpty) <$> lookupEnv "LANGUAGE"
+  case raw of
+    Nothing -> return Nothing
+    Just code
+      | isLanguageCode code -> return (Just (T.pack code))
+      | otherwise -> do
+          putStrLn $ "Warning: LANGUAGE=" ++ code
+                  ++ " is not a whisper language code (it looks like a system locale). Using auto-detection."
+          return Nothing
+
+-- | Whisper accepts ISO codes ("en", "yue") and English names ("english"),
+-- all lower-case letters; locale strings carry '_', ':' or '.'
+isLanguageCode :: String -> Bool
+isLanguageCode s = length s >= 2 && all isAsciiLower s
+
 -- | Treat an empty string as unset
 nonEmpty :: String -> Maybe String
 nonEmpty "" = Nothing
@@ -241,16 +259,20 @@ readEnvWithDefault envVar defaultVal parser = do
         return defaultVal
 
 -- Parsers for configuration values
-parseModelSize :: String -> Maybe ModelSize
-parseModelSize s = case map toLowerChar s of
-  "tiny" -> Just Tiny
-  "base" -> Just Base
-  "small" -> Just Small
-  "medium" -> Just Medium
-  "large" -> Just Large
-  _ -> Nothing
+
+-- | A whisper model: either a bare whisper.cpp model name such as "base" or
+-- "large-v3-turbo" (lower-cased, since the release files are), or a path to
+-- a GGML file (anything with a slash or a .bin suffix, kept verbatim)
+parseWhisperModel :: String -> Maybe String
+parseWhisperModel s
+  | null s || any isSpace s = Nothing
+  | '/' `elem` s || ".bin" `isSuffixOf` s = Just s
+  | all validNameChar lowered = Just lowered
+  | otherwise = Nothing
   where
+    lowered = map toLowerChar s
     toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
+    validNameChar c = isAsciiLower c || isDigit c || c `elem` ("._-" :: String)
 
 parseDevice :: String -> Maybe Device
 parseDevice s = case map toLowerChar s of

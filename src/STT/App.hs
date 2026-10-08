@@ -55,16 +55,17 @@ runApp initialConfig = do
     putStrLn "Configuration:"
     putStrLn "  3. List audio devices"
     putStrLn "  4. Change language settings"
-    putStrLn "  5. Change LLM model"
-    putStrLn "  6. Toggle speaker diarization"
+    putStrLn "  5. Change Whisper model"
+    putStrLn "  6. Change LLM model"
+    putStrLn "  7. Toggle speaker diarization"
     putStrLn ""
     putStrLn "Post-Processing:"
-    putStrLn "  7. Clean transcription file"
-    putStrLn "  8. Extract TODOs from file"
+    putStrLn "  8. Clean transcription file"
+    putStrLn "  9. Extract TODOs from file"
     putStrLn ""
-    putStrLn "  9. Quit"
+    putStrLn "  10. Quit"
     putStrLn ""
-    putStr "Choose an option (1-9): "
+    putStr "Choose an option (1-10): "
     hFlush stdout
 
     choice <- getLine
@@ -77,21 +78,25 @@ runApp initialConfig = do
       "2" -> transcribeExistingMenu config
       "3" -> listDevicesMenu
       "4" -> changeLanguageMenu configRef
-      "5" -> changeLlmModelMenu configRef
-      "6" -> toggleDiarizationMenu configRef
-      "7" -> cleanTranscriptionMenu config
-      "8" -> extractTodosMenu config
-      "9" -> do
+      "5" -> changeWhisperModelMenu configRef
+      "6" -> changeLlmModelMenu configRef
+      "7" -> toggleDiarizationMenu configRef
+      "8" -> cleanTranscriptionMenu config
+      "9" -> extractTodosMenu config
+      "10" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-9."
+      _ -> putStrLn "Invalid choice. Please choose 1-10."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
 printConfig config = do
   deviceStr <- Config.getDeviceString (device config)
   putStrLn "Current Configuration:"
-  putStrLn $ "  Model: " ++ show (modelSize config)
+  whisperInstalled <- doesFileExist (Models.resolveWhisperModel (whisperModel config))
+  putStrLn $ "  Whisper Model: " ++ whisperModel config
+          ++ (if whisperInstalled then "" else " [not installed]")
+  putStrLn $ "  Whisper Threads: " ++ maybe "auto" show (whisperThreads config)
   putStrLn $ "  Device: " ++ deviceStr
   putStrLn $ "  Sample Rate: " ++ show (Config.unSampleRate $ sampleRate config) ++ " Hz"
   putStrLn $ "  Max Duration: " ++ show (Config.unMinutes $ maxDurationMinutes config) ++ " minutes"
@@ -291,32 +296,70 @@ extractTodosMenu config = do
       TIO.putStrLn todos
       putStrLn "========================================="
 
+-- | Menu for choosing (and if necessary downloading) the whisper model.
+-- Quality is mostly decided here: large-v3-turbo is the recommended
+-- step up from the base model setup.sh installs.
+changeWhisperModelMenu :: IORef AppConfig -> IO ()
+changeWhisperModelMenu = modelChooserMenu ModelChooser
+  { chooserTitle = "Whisper model"
+  , chooserRegistry = Models.knownWhisperModels
+  , chooserCustomHint = "any whisper.cpp GGML model"
+  , chooserCurrent = Models.resolveWhisperModel . whisperModel
+  , chooserValue = Models.modelKey
+  , chooserSet = \value config -> config { whisperModel = value }
+  }
+
 -- | Menu for choosing (and if necessary downloading) the LLM model used
 -- for post-processing. Any instruct GGUF works; the curated list covers
 -- the speed/quality range for CPU inference.
 changeLlmModelMenu :: IORef AppConfig -> IO ()
-changeLlmModelMenu configRef = do
+changeLlmModelMenu = modelChooserMenu ModelChooser
+  { chooserTitle = "LLM model"
+  , chooserRegistry = Models.knownModels
+  , chooserCustomHint = "any instruct GGUF"
+  , chooserCurrent = llmModelPath
+  , chooserValue = Models.modelPath
+  , chooserSet = \value config -> config { llmModelPath = value }
+  }
+
+-- | What the shared model chooser needs to know about one engine
+data ModelChooser = ModelChooser
+  { chooserTitle :: String                       -- ^ shown in prompts, e.g. "Whisper model"
+  , chooserRegistry :: [Models.ModelSpec]        -- ^ curated models to offer
+  , chooserCustomHint :: String                  -- ^ what a typed path may point at
+  , chooserCurrent :: AppConfig -> FilePath      -- ^ file the current setting resolves to
+  , chooserValue :: Models.ModelSpec -> String   -- ^ config value to store for a registry pick
+  , chooserSet :: String -> AppConfig -> AppConfig
+  }
+
+-- | List curated models with install/current markers, download the chosen
+-- one if needed, or accept a path to a custom model file
+modelChooserMenu :: ModelChooser -> IORef AppConfig -> IO ()
+modelChooserMenu chooser configRef = do
   config <- readIORef configRef
 
-  putStrLn $ "Current LLM model: " ++ llmModelPath config
+  putStrLn $ "Current " ++ chooserTitle chooser ++ ": " ++ chooserCurrent chooser config
   putStrLn ""
   putStrLn "Available models:"
-  mapM_ (printModel config) (zip [1 :: Int ..] Models.knownModels)
+  mapM_ (printModel config) numbered
   putStrLn ""
-  putStr "Choose a model number, or type a path to any instruct GGUF (Enter to keep current): "
+  putStr $ "Choose a model number, or type a path to " ++ chooserCustomHint chooser
+        ++ " (Enter to keep current): "
   hFlush stdout
 
   input <- getLine
   case input of
-    "" -> putStrLn "LLM model unchanged."
+    "" -> putStrLn $ chooserTitle chooser ++ " unchanged."
     _ | Just n <- readMaybe input :: Maybe Int
-      , Just spec <- lookup n (zip [1 ..] Models.knownModels) -> selectModel spec
+      , Just spec <- lookup n numbered -> selectModel spec
       | otherwise -> selectPath input
   where
+    numbered = zip [1 :: Int ..] (chooserRegistry chooser)
+
     printModel config (n, spec) = do
       installed <- Models.isInstalled spec
       let markers = concat
-            [ if Models.modelPath spec == llmModelPath config then " [current]" else ""
+            [ if Models.modelPath spec == chooserCurrent chooser config then " [current]" else ""
             , if installed then " [installed]" else ""
             ]
       putStrLn $ "  " ++ show n ++ ". " ++ Models.modelLabel spec
@@ -327,7 +370,7 @@ changeLlmModelMenu configRef = do
     selectModel spec = do
       installed <- Models.isInstalled spec
       if installed
-        then setModelPath (Models.modelPath spec)
+        then setValue (chooserValue chooser spec)
         else do
           putStr $ "Download " ++ Models.modelLabel spec
                 ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
@@ -339,20 +382,20 @@ changeLlmModelMenu configRef = do
               result <- Models.downloadModel spec
               case result of
                 Left err -> putStrLn err
-                Right path -> setModelPath path
+                Right _ -> setValue (chooserValue chooser spec)
             else putStrLn "Download cancelled."
 
     selectPath path = do
       exists <- doesFileExist path
       if exists
-        then setModelPath path
+        then setValue path
         else putStrLn $ "File not found: " ++ path
 
-    setModelPath path = do
+    setValue value = do
       config <- readIORef configRef
-      let newConfig = config { llmModelPath = path }
+      let newConfig = chooserSet chooser value config
       writeIORef configRef newConfig
-      putStrLn $ "LLM model changed to: " ++ path
+      putStrLn $ chooserTitle chooser ++ " changed to: " ++ value
       putStrLn ""
       putStrLn "Updated configuration:"
       printConfig newConfig

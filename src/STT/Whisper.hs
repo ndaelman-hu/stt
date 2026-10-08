@@ -17,10 +17,12 @@ import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.ByteString.Lazy as BSL
 import GHC.Generics (Generic)
+import GHC.Conc (getNumProcessors)
+import System.Directory (doesFileExist)
 import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode(..))
-import STT.Config (AppConfig(..), ModelSize(..), Task(..))
-import qualified STT.Config as Config
+import STT.Config (AppConfig(..), Device(..), Task(..))
+import qualified STT.Models as Models
 
 -- | Result of transcription
 data TranscriptionResult = TranscriptionResult
@@ -76,8 +78,11 @@ transcribeFileWithConfig config = transcribeFileWithPrompt config Nothing
 -- prompt to bias recognition (e.g. towards technical vocabulary)
 transcribeFileWithPrompt :: AppConfig -> Maybe Text -> FilePath -> IO (Either String TranscriptionResult)
 transcribeFileWithPrompt config initialPrompt audioPath = do
-  deviceStr <- Config.getDeviceString (device config)
-  let modelSizeStr = modelSizeToString (modelSize config)
+  threads <- maybe defaultThreads return (whisperThreads config)
+  let modelFile = Models.resolveWhisperModel (whisperModel config)
+      -- whisper-cli offloads to whatever GPU backend it was built with
+      -- (Vulkan in the Nix shell, CUDA in a CUDA build) unless told not to
+      useGpu = device config /= CPU
       taskMode = task config
       langStr = maybe "auto" T.unpack (language config)
       prompt = PromptOptions initialPrompt (whisperCarryPrompt config)
@@ -86,7 +91,17 @@ transcribeFileWithPrompt config initialPrompt audioPath = do
       -- without word spacing), which caps how many speakers can be told apart
       fineSegments = diarizationEnabled config
 
-  transcribeFile (whisperBinaryPath config) audioPath modelSizeStr deviceStr langStr prompt fineSegments taskMode
+  modelExists <- doesFileExist modelFile
+  if modelExists
+    then transcribeFile (whisperBinaryPath config) audioPath modelFile threads useGpu langStr prompt fineSegments taskMode
+    else return $ Left $ "Whisper model not found: " ++ modelFile
+           ++ ". Pick one under \"Change Whisper model\" in the menu (it can download it), or set WHISPER_MODEL."
+
+-- | Threads for whisper when WHISPER_THREADS is unset: all but two logical
+-- processors, leaving headroom for recording and the UI. whisper.cpp's own
+-- default is a fixed 4, which leaves most of a modern laptop idle.
+defaultThreads :: IO Int
+defaultThreads = max 1 . subtract 2 <$> getNumProcessors
 
 -- | Initial prompt for whisper and whether to re-inject it every window
 data PromptOptions = PromptOptions !(Maybe Text) !Bool
@@ -95,29 +110,31 @@ data PromptOptions = PromptOptions !(Maybe Text) !Bool
 transcribeFile
   :: FilePath       -- ^ Path to the whisper-cli binary
   -> FilePath       -- ^ Path to audio file
-  -> String         -- ^ Model size (tiny, base, small, medium, large)
-  -> String         -- ^ Device (cpu, cuda)
+  -> FilePath       -- ^ Path to the GGML model file
+  -> Int            -- ^ CPU threads for whisper
+  -> Bool           -- ^ Allow GPU offload (False forces CPU with -ng)
   -> String         -- ^ Language (auto or language code)
   -> PromptOptions  -- ^ Initial prompt settings
   -> Bool           -- ^ Split output into fine-grained segments (for diarization)
   -> Task           -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile whisperBin audioPath modelSz dev lang prompt fineSegments taskMode =
+transcribeFile whisperBin audioPath modelFile threads useGpu lang prompt fineSegments taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments False
-    Translate -> transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments True
-    Both -> transcribeBoth whisperBin audioPath modelSz dev lang prompt fineSegments
+    Transcribe -> transcribeOnly whisperBin audioPath modelFile threads useGpu lang prompt fineSegments False
+    Translate -> transcribeOnly whisperBin audioPath modelFile threads useGpu lang prompt fineSegments True
+    Both -> transcribeBoth whisperBin audioPath modelFile threads useGpu lang prompt fineSegments
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> FilePath -> String -> String -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly whisperBin audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
-  let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
-      jsonOutputPath = audioPath ++ ".json"
-      baseArgs = [ "-m", modelPath
+transcribeOnly :: FilePath -> FilePath -> FilePath -> Int -> Bool -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly whisperBin audioPath modelFile threads useGpu lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
+  let jsonOutputPath = audioPath ++ ".json"
+      baseArgs = [ "-m", modelFile
                  , "-f", audioPath
                  , "-l", lang
+                 , "-t", show threads
                  , "-oj"  -- Output JSON to file
                  ]
+                 ++ ["-ng" | not useGpu]
       promptArgs = case initialPrompt of
         Nothing -> []
         Just p -> ["--prompt", T.unpack p]
@@ -132,9 +149,14 @@ transcribeOnly whisperBin audioPath modelSz _dev lang (PromptOptions initialProm
 
   -- Execute whisper.cpp
   (exitCode, stdout, stderr) <- readProcessWithExitCode whisperBin args ""
+  -- whisper-cli exits 0 for some usage errors (e.g. an unknown language), so
+  -- a missing JSON file is the reliable sign that nothing was transcribed
+  jsonWritten <- doesFileExist jsonOutputPath
 
   case exitCode of
     ExitFailure _ -> return $ Left $ "whisper.cpp failed: " ++ stderr
+    ExitSuccess | not jsonWritten ->
+      return $ Left $ "whisper.cpp produced no output: " ++ T.unpack (T.strip (T.pack (stderr ++ stdout)))
     ExitSuccess -> do
       -- Read JSON output from file
       jsonContent <- BSL.readFile jsonOutputPath
@@ -142,38 +164,30 @@ transcribeOnly whisperBin audioPath modelSz _dev lang (PromptOptions initialProm
         Nothing -> return $ Left "Failed to parse whisper.cpp JSON output"
         Just resp -> do
           let text = T.concat $ map segmentText (transcription resp)
-              lang = case resultInfo resp of
+              detectedLang = case resultInfo resp of
                        Just info -> detectedLanguage info
                        Nothing -> Nothing
           return $ Right TranscriptionResult
             { transText = T.strip text
-            , transLanguage = lang
+            , transLanguage = detectedLang
             , transDuration = Nothing  -- whisper.cpp doesn't provide total duration easily
             , transTranslation = Nothing
             , transSegments = transcription resp
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
-transcribeBoth whisperBin audioPath modelSz dev lang prompt fineSegments = do
+transcribeBoth :: FilePath -> FilePath -> FilePath -> Int -> Bool -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
+transcribeBoth whisperBin audioPath modelFile threads useGpu lang prompt fineSegments = do
   -- First, transcribe
-  transResult <- transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments False
+  transResult <- transcribeOnly whisperBin audioPath modelFile threads useGpu lang prompt fineSegments False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments True
+      translateResult <- transcribeOnly whisperBin audioPath modelFile threads useGpu lang prompt fineSegments True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->
           return $ Right trans
             { transTranslation = Just (transText translation)
             }
-
--- Helper functions
-modelSizeToString :: ModelSize -> String
-modelSizeToString Tiny = "tiny"
-modelSizeToString Base = "base"
-modelSizeToString Small = "small"
-modelSizeToString Medium = "medium"
-modelSizeToString Large = "large"

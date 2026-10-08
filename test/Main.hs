@@ -34,15 +34,30 @@ tests = testGroup "Whisper-HS Tests"
 -- | Test configuration parsers
 configParserTests :: TestTree
 configParserTests = testGroup "Config Parsers"
-  [ testGroup "parseModelSize"
-      [ testCase "parses 'tiny'" $
-          parseModelSize "tiny" @?= Just Tiny
-      , testCase "parses 'base'" $
-          parseModelSize "base" @?= Just Base
-      , testCase "parses 'SMALL' (case insensitive)" $
-          parseModelSize "SMALL" @?= Just Small
-      , testCase "rejects invalid" $
-          parseModelSize "invalid" @?= Nothing
+  [ testGroup "parseWhisperModel"
+      [ testCase "accepts a bare model name" $
+          parseWhisperModel "base" @?= Just "base"
+      , testCase "lower-cases names (release files are lower-case)" $
+          parseWhisperModel "Large-V3-Turbo" @?= Just "large-v3-turbo"
+      , testCase "accepts quantization suffixes" $
+          parseWhisperModel "large-v3-turbo-q5_0" @?= Just "large-v3-turbo-q5_0"
+      , testCase "keeps paths verbatim, including case" $
+          parseWhisperModel "/Models/My-Model.bin" @?= Just "/Models/My-Model.bin"
+      , testCase "rejects empty" $
+          parseWhisperModel "" @?= Nothing
+      , testCase "rejects whitespace" $
+          parseWhisperModel "large v3" @?= Nothing
+      ]
+
+  , testGroup "isLanguageCode"
+      [ testCase "accepts ISO codes" $
+          assertBool "en, de, yue" (all isLanguageCode ["en", "de", "yue"])
+      , testCase "accepts whisper's English names" $
+          assertBool "english" (isLanguageCode "english")
+      , testCase "rejects glibc locale strings" $
+          assertBool "en_US:en, de_DE.UTF-8, C" (not (any isLanguageCode ["en_US:en", "de_DE.UTF-8", "C"]))
+      , testCase "rejects empty" $
+          isLanguageCode "" @?= False
       ]
 
   , testGroup "parseDevice"
@@ -295,6 +310,12 @@ roleSuggestionTests = testGroup "Role Suggestions"
         @?= [("Speaker 1", "Bob")]
   , testCase "drops empty roles" $
       parseRoleSuggestions ["Speaker 1"] "Speaker 1:  " @?= []
+  , testCase "drops sentence-length roles (echoed transcript)" $
+      parseRoleSuggestions ["Speaker 1"]
+        "Speaker 1: And so my fellow Americans ask not what your country can do for you."
+        @?= []
+  , testCase "strips trailing punctuation from roles" $
+      parseRoleSuggestions ["Speaker 1"] "Speaker 1: Project lead." @?= [("Speaker 1", "Project lead")]
   ]
 
 -- | Sanity checks on the curated LLM registry
@@ -313,6 +334,22 @@ modelRegistryTests = testGroup "Model Registry"
   , testCase "default setup model is in the registry" $
       assertBool "tinyllama present"
         (any (("tinyllama-1.1b-chat.gguf" ==) . Models.modelFile) Models.knownModels)
+  , testCase "whisper keys are unique" $
+      length (nub (map Models.modelKey Models.knownWhisperModels))
+        @?= length Models.knownWhisperModels
+  , testCase "whisper URLs are https" $
+      assertBool "all https"
+        (all (("https://" ==) . take 8 . Models.modelUrl) Models.knownWhisperModels)
+  , testCase "whisper names resolve to their registry files" $
+      assertBool "resolveWhisperModel matches modelPath"
+        (all (\m -> Models.resolveWhisperModel (Models.modelKey m) == Models.modelPath m)
+             Models.knownWhisperModels)
+  , testCase "default whisper model is in the registry" $
+      assertBool "base present" (any (("base" ==) . Models.modelKey) Models.knownWhisperModels)
+  , testCase "resolveWhisperModel keeps explicit paths" $
+      Models.resolveWhisperModel "/tmp/custom.bin" @?= "/tmp/custom.bin"
+  , testCase "resolveWhisperModel treats .bin names as files" $
+      Models.resolveWhisperModel "ggml-custom.bin" @?= "ggml-custom.bin"
   ]
 
 -- | Test extraction of the assistant reply from llama-cli stdout
@@ -354,9 +391,6 @@ extractReplyTests = testGroup "extractReply"
   ]
 
 -- | Property-based tests
-instance Arbitrary ModelSize where
-  arbitrary = elements [Tiny, Base, Small, Medium, Large]
-
 instance Arbitrary Device where
   arbitrary = elements [Auto, CPU, CUDA]
 
