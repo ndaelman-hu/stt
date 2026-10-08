@@ -6,7 +6,7 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 
 ### Core Transcription
 - **Real-time audio recording** via PipeWire (`pw-record`) or ALSA (`arecord`), with a silence check
-- **Configurable stop signals**: Ctrl+C, Enter, or Space
+- **Configurable stop signals**: Enter (default), Space, or Ctrl+C
 - **Multiple transcription modes**:
   - Transcribe (keep original language)
   - Translate (translate to English)
@@ -131,7 +131,7 @@ SAMPLE_RATE=16000
 MAX_DURATION_MINUTES=90
 
 # Stop signal: ctrl_c, enter, space
-STOP_SIGNAL=ctrl_c
+STOP_SIGNAL=enter
 
 # Language code (leave empty for auto-detection)
 # Examples: en, es, fr, de, ja, zh
@@ -209,7 +209,7 @@ Duration in seconds: 10
 ```
 Duration in seconds: [press Enter]
 ```
-Then press your configured stop signal (Ctrl+C, Enter, or Space).
+Then press your configured stop signal (Enter by default; Space or Ctrl+C if configured).
 
 ### Example Workflow
 
@@ -252,8 +252,8 @@ Whisper uses all but two logical processors by default; override with
 
 ### Stop Signals
 
-- `ctrl_c`: Press Ctrl+C to stop (traditional)
-- `enter`: Press Enter to stop (convenient)
+- `ctrl_c`: Press Ctrl+C to stop
+- `enter`: Press Enter to stop (default)
 - `space`: Press Space to stop (quick)
 
 ## Architecture
