@@ -5,10 +5,15 @@ module Main (main) where
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (Arbitrary(..), elements)
+import Control.Exception (finally)
 import qualified Data.Text as T
 import Data.Aeson (decode)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import Data.List (nub)
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (openBinaryTempFile, hClose)
+import STT.Audio (fixWavHeader, locateDataChunk, peakDbfs)
 import STT.Config
 import STT.Diarize
 import STT.LLM (extractReply, parseRoleSuggestions)
@@ -29,7 +34,57 @@ tests = testGroup "Whisper-HS Tests"
   , diarizationTests
   , roleSuggestionTests
   , vocabTests
+  , audioTests
   ]
+
+-- | WAV header repair and level measurement
+audioTests :: TestTree
+audioTests = testGroup "Audio / WAV"
+  [ testCase "locateDataChunk finds the canonical 44-byte header" $
+      locateDataChunk (wavHeader 1000) @?= Just 44
+  , testCase "locateDataChunk skips extra chunks" $
+      locateDataChunk (BS.concat ["RIFF", le32 100, "WAVE", "LIST", le32 4, "abcd", "data", le32 0])
+        @?= Just 32
+  , testCase "locateDataChunk rejects non-WAV data" $
+      locateDataChunk "not a wav file at all" @?= Nothing
+  , testCase "fixWavHeader repairs the sizes of an interrupted recording" $
+      withTempWav (wavHeader 172800000 <> BS.replicate 8 0) $ \path -> do
+        fixWavHeader path
+        fixed <- BS.readFile path
+        BS.take 4 (BS.drop 4 fixed) @?= le32 (BS.length fixed - 8)
+        BS.take 4 (BS.drop 40 fixed) @?= le32 8
+  , testCase "peakDbfs reports digital silence as -96 dBFS" $
+      withTempWav (wavHeader 8 <> BS.replicate 8 0) $ \path ->
+        peakDbfs path >>= (@?= Just (-96))
+  , testCase "peakDbfs reports a half-scale sample near -6 dBFS" $
+      withTempWav (wavHeader 4 <> BS.pack [0, 0, 0, 0x40]) $ \path -> do
+        level <- peakDbfs path
+        case level of
+          Just db -> assertBool ("got " ++ show db) (abs (db + 6.02) < 0.1)
+          Nothing -> assertFailure "no level measured"
+  ]
+
+-- | A 16-bit mono 16 kHz WAV header claiming the given data size
+wavHeader :: Int -> BS.ByteString
+wavHeader dataSize = BS.concat
+  [ "RIFF", le32 (36 + dataSize), "WAVE"
+  , "fmt ", le32 16, le16 1, le16 1, le32 16000, le32 32000, le16 2, le16 16
+  , "data", le32 dataSize
+  ]
+
+le32 :: Int -> BS.ByteString
+le32 v = BS.pack [fromIntegral (v `div` 256 ^ i `mod` 256) | i <- [0 .. 3 :: Int]]
+
+le16 :: Int -> BS.ByteString
+le16 v = BS.pack [fromIntegral (v `div` 256 ^ i `mod` 256) | i <- [0 .. 1 :: Int]]
+
+withTempWav :: BS.ByteString -> (FilePath -> IO a) -> IO a
+withTempWav bytes action = do
+  dir <- getTemporaryDirectory
+  (path, h) <- openBinaryTempFile dir "whisper-hs-test.wav"
+  BS.hPut h bytes
+  hClose h
+  action path `finally` removeFile path
 
 -- | Test configuration parsers
 configParserTests :: TestTree

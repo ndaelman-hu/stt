@@ -5,7 +5,7 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 ## Features
 
 ### Core Transcription
-- **Real-time audio recording** with multiple microphone support
+- **Real-time audio recording** via PipeWire (`pw-record`) or ALSA (`arecord`), with a silence check
 - **Configurable stop signals**: Ctrl+C, Enter, or Space
 - **Multiple transcription modes**:
   - Transcribe (keep original language)
@@ -171,7 +171,8 @@ The application presents an interactive menu:
    - Supports: WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4
 
 3. List audio devices
-   - Shows available microphones
+   - Shows the capture backend (PipeWire or ALSA), its microphones and the default
+   - Pass an id or name from this list as the input device when recording
 
 4. Change language settings
    - Fix the spoken language or return to auto-detection

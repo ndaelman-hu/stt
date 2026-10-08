@@ -9,6 +9,7 @@ module STT.Config
   , Device(..)
   , StopSignal(..)
   , Task(..)
+  , RecordBackend(..)
   , SampleRate(..)
   , Minutes(..)
 
@@ -29,6 +30,7 @@ module STT.Config
   , parseDevice
   , parseStopSignal
   , parseTask
+  , parseRecordBackend
   , parseBool
   , parseDouble
   , parsePositiveInt
@@ -68,6 +70,16 @@ data StopSignal
 instance FromJSON StopSignal
 instance ToJSON StopSignal
 
+-- | How audio is captured
+data RecordBackend
+  = AutoBackend      -- ^ PipeWire when pw-record and a running daemon are found, else ALSA
+  | PipeWireBackend  -- ^ pw-record
+  | AlsaBackend      -- ^ arecord
+  deriving (Show, Read, Eq, Generic)
+
+instance FromJSON RecordBackend
+instance ToJSON RecordBackend
+
 -- | Transcription task types
 data Task
   = Transcribe
@@ -104,6 +116,7 @@ data AppConfig = AppConfig
   , sampleRate :: !SampleRate
   , maxDurationMinutes :: !Minutes
   , stopSignal :: !StopSignal
+  , recordBackend :: !RecordBackend
   , language :: !(Maybe Text)
   , task :: !Task
   , keepRecordings :: !Bool
@@ -134,6 +147,7 @@ defaultAppConfig = AppConfig
   , sampleRate = SampleRate 16000
   , maxDurationMinutes = Minutes 90
   , stopSignal = CtrlC
+  , recordBackend = AutoBackend
   , language = Nothing
   , task = Transcribe
   , keepRecordings = False
@@ -173,6 +187,7 @@ loadConfig envFile = do
   sampleRate' <- readEnvWithDefault "SAMPLE_RATE" (sampleRate defaultAppConfig) parseSampleRate
   maxDuration' <- readEnvWithDefault "MAX_DURATION_MINUTES" (maxDurationMinutes defaultAppConfig) parseMinutes
   stopSignal' <- readEnvWithDefault "STOP_SIGNAL" (stopSignal defaultAppConfig) parseStopSignal
+  recordBackend' <- readEnvWithDefault "RECORD_BACKEND" (recordBackend defaultAppConfig) parseRecordBackend
   language' <- readLanguage
   task' <- readEnvWithDefault "TASK" (task defaultAppConfig) parseTask
   keepRecordings' <- readEnvWithDefault "KEEP_RECORDINGS" (keepRecordings defaultAppConfig) parseBool
@@ -203,6 +218,7 @@ loadConfig envFile = do
     , sampleRate = sampleRate'
     , maxDurationMinutes = maxDuration'
     , stopSignal = stopSignal'
+    , recordBackend = recordBackend'
     , language = language'
     , task = task'
     , keepRecordings = keepRecordings'
@@ -297,6 +313,15 @@ parseTask s = case map toLowerChar s of
   "transcribe" -> Just Transcribe
   "translate" -> Just Translate
   "both" -> Just Both
+  _ -> Nothing
+  where
+    toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c
+
+parseRecordBackend :: String -> Maybe RecordBackend
+parseRecordBackend s = case map toLowerChar s of
+  "auto" -> Just AutoBackend
+  "pipewire" -> Just PipeWireBackend
+  "alsa" -> Just AlsaBackend
   _ -> Nothing
   where
     toLowerChar c = if isAsciiUpper c then toEnum (fromEnum c + 32) else c

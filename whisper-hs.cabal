@@ -75,6 +75,7 @@ test-suite whisper-hs-test
     , tasty >=1.4
     , tasty-hunit >=0.10
     , tasty-quickcheck >=0.10
+    , directory
     , aeson
     , text
     , bytestring

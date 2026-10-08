@@ -9,6 +9,7 @@ module STT.App
   ) where
 
 import Control.Monad (forever, when, unless)
+import Data.Char (toLower)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -76,7 +77,7 @@ runApp initialConfig = do
     case choice of
       "1" -> recordAndTranscribeMenu config
       "2" -> transcribeExistingMenu config
-      "3" -> listDevicesMenu
+      "3" -> listDevicesMenu config
       "4" -> changeLanguageMenu configRef
       "5" -> changeWhisperModelMenu configRef
       "6" -> changeLlmModelMenu configRef
@@ -91,13 +92,12 @@ runApp initialConfig = do
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
 printConfig config = do
-  deviceStr <- Config.getDeviceString (device config)
   putStrLn "Current Configuration:"
   whisperInstalled <- doesFileExist (Models.resolveWhisperModel (whisperModel config))
   putStrLn $ "  Whisper Model: " ++ whisperModel config
           ++ (if whisperInstalled then "" else " [not installed]")
   putStrLn $ "  Whisper Threads: " ++ maybe "auto" show (whisperThreads config)
-  putStrLn $ "  Device: " ++ deviceStr
+  putStrLn $ "  Compute Device: " ++ map toLower (show (device config))
   putStrLn $ "  Sample Rate: " ++ show (Config.unSampleRate $ sampleRate config) ++ " Hz"
   putStrLn $ "  Max Duration: " ++ show (Config.unMinutes $ maxDurationMinutes config) ++ " minutes"
   putStrLn $ "  Stop Signal: " ++ show (stopSignal config)
@@ -119,13 +119,13 @@ recordAndTranscribeMenu config = do
                  then Nothing
                  else readMaybe durationInput
 
-  putStr "Device ID (press Enter for default): "
+  putStr "Input device (Enter for default; an id or name from \"List audio devices\"): "
   hFlush stdout
   deviceInput <- getLine
 
   let deviceId = if null deviceInput
                  then Nothing
-                 else readMaybe deviceInput
+                 else Just deviceInput
 
   sessionContext <- promptSessionContext config deviceId
 
@@ -144,19 +144,22 @@ transcribeExistingMenu config = do
   transcribeExistingFile config sessionContext filePath
 
 -- | Menu for listing devices
-listDevicesMenu :: IO ()
-listDevicesMenu = do
-  putStrLn "Available audio devices:"
-  devices <- Audio.listAudioDevices
+listDevicesMenu :: AppConfig -> IO ()
+listDevicesMenu config = do
+  backend <- Audio.detectBackend config
+  putStrLn $ "Audio backend: " ++ Audio.backendName backend
+  putStrLn "Available input devices:"
+  devices <- Audio.listAudioDevices backend
   if null devices
-    then putStrLn "No devices found or arecord not available."
+    then putStrLn "No devices found."
     else mapM_ printDevice devices
   where
     printDevice dev =
-      putStrLn $ "  " ++ show (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
+      putStrLn $ "  " ++ T.unpack (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
+              ++ (if Audio.deviceIsDefault dev then " [default]" else "")
 
 -- | Record audio and transcribe it
-recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe Int -> Maybe T.Text -> IO ()
+recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe String -> Maybe T.Text -> IO ()
 recordAndTranscribe config duration deviceId sessionContext = do
   -- Record audio
   maybeAudioPath <- Audio.recordAudio config duration deviceId
@@ -407,7 +410,7 @@ buildPromptFromConfig config sessionContext = do
 
 -- | Optionally collect a session context before recording: a sentence or two
 -- describing the topic and expected jargon, either typed or dictated
-promptSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+promptSessionContext :: AppConfig -> Maybe String -> IO (Maybe T.Text)
 promptSessionContext config deviceId = do
   putStrLn ""
   putStrLn "Session context (biases recognition of names and technical terms):"
@@ -428,7 +431,7 @@ promptSessionContext config deviceId = do
     _ -> return Nothing
 
 -- | Record a short snippet, transcribe it, and use the text as session context
-dictateSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+dictateSessionContext :: AppConfig -> Maybe String -> IO (Maybe T.Text)
 dictateSessionContext config deviceId = do
   putStrLn "Recording context (up to 20 seconds)..."
   maybeAudioPath <- Audio.recordAudio config (Just 20) deviceId
