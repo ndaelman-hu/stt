@@ -116,6 +116,7 @@ data AppConfig = AppConfig
   , language :: !(Maybe Text)
   , task :: !Task
   , keepRecordings :: !Bool
+  , whisperBinaryPath :: !FilePath
   -- LLM post-processing settings
   , llmBinaryPath :: !FilePath
   , llmModelPath :: !FilePath
@@ -144,6 +145,7 @@ defaultAppConfig = AppConfig
   , language = Nothing
   , task = Transcribe
   , keepRecordings = False
+  , whisperBinaryPath = "whisper.cpp/build/bin/whisper-cli"
   -- LLM defaults
   , llmBinaryPath = "llama.cpp/build/bin/llama-cli"
   , llmModelPath = "llama.cpp/models/tinyllama-1.1b-chat.gguf"
@@ -177,6 +179,7 @@ loadConfig envFile = do
   language' <- fmap T.pack <$> lookupEnv "LANGUAGE"
   task' <- readEnvWithDefault "TASK" (task defaultAppConfig) parseTask
   keepRecordings' <- readEnvWithDefault "KEEP_RECORDINGS" (keepRecordings defaultAppConfig) parseBool
+  whisperBin' <- readEnvWithDefault "WHISPER_BINARY_PATH" (whisperBinaryPath defaultAppConfig) Just
 
   -- LLM settings
   llmBinPath' <- readEnvWithDefault "LLM_BINARY_PATH" (llmBinaryPath defaultAppConfig) Just
@@ -205,6 +208,7 @@ loadConfig envFile = do
     , language = language'
     , task = task'
     , keepRecordings = keepRecordings'
+    , whisperBinaryPath = whisperBin'
     , llmBinaryPath = llmBinPath'
     , llmModelPath = llmModelPath'
     , llmEnableCleaning = llmCleaning'

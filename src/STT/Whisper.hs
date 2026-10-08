@@ -86,14 +86,15 @@ transcribeFileWithPrompt config initialPrompt audioPath = do
       -- without word spacing), which caps how many speakers can be told apart
       fineSegments = diarizationEnabled config
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr prompt fineSegments taskMode
+  transcribeFile (whisperBinaryPath config) audioPath modelSizeStr deviceStr langStr prompt fineSegments taskMode
 
 -- | Initial prompt for whisper and whether to re-inject it every window
 data PromptOptions = PromptOptions !(Maybe Text) !Bool
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
-  :: FilePath       -- ^ Path to audio file
+  :: FilePath       -- ^ Path to the whisper-cli binary
+  -> FilePath       -- ^ Path to audio file
   -> String         -- ^ Model size (tiny, base, small, medium, large)
   -> String         -- ^ Device (cpu, cuda)
   -> String         -- ^ Language (auto or language code)
@@ -101,15 +102,15 @@ transcribeFile
   -> Bool           -- ^ Split output into fine-grained segments (for diarization)
   -> Task           -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang prompt fineSegments taskMode =
+transcribeFile whisperBin audioPath modelSz dev lang prompt fineSegments taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSz dev lang prompt fineSegments False
-    Translate -> transcribeOnly audioPath modelSz dev lang prompt fineSegments True
-    Both -> transcribeBoth audioPath modelSz dev lang prompt fineSegments
+    Transcribe -> transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments False
+    Translate -> transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments True
+    Both -> transcribeBoth whisperBin audioPath modelSz dev lang prompt fineSegments
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
+transcribeOnly :: FilePath -> FilePath -> String -> String -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly whisperBin audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
   let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
@@ -130,7 +131,7 @@ transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPro
              ++ ["--translate" | shouldTranslate]
 
   -- Execute whisper.cpp
-  (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/build/bin/whisper-cli" args ""
+  (exitCode, stdout, stderr) <- readProcessWithExitCode whisperBin args ""
 
   case exitCode of
     ExitFailure _ -> return $ Left $ "whisper.cpp failed: " ++ stderr
@@ -153,15 +154,15 @@ transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPro
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSz dev lang prompt fineSegments = do
+transcribeBoth :: FilePath -> FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
+transcribeBoth whisperBin audioPath modelSz dev lang prompt fineSegments = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments False
+  transResult <- transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments True
+      translateResult <- transcribeOnly whisperBin audioPath modelSz dev lang prompt fineSegments True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->
