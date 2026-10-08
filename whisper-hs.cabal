@@ -31,7 +31,10 @@ library
     STT.Audio
     STT.Whisper
     STT.App
+    STT.Diarize
     STT.LLM
+    STT.Models
+    STT.Vocab
     STT.PostProcess
     STT.Markdown
   build-depends:

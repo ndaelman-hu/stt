@@ -19,6 +19,11 @@ formatMeetingMinutes result = do
 
   let header = "# Meeting Transcription - " <> T.pack timestamp <> "\n\n"
 
+      speakerSection = case speakerTranscript result of
+        Just turns ->
+          "## Speaker Transcript\n\n" <> turns <> "\n\n"
+        Nothing -> ""
+
       cleanedSection = case cleanedText result of
         Just cleaned ->
           "## Cleaned Transcript\n\n" <> cleaned <> "\n\n"
@@ -40,6 +45,7 @@ formatMeetingMinutes result = do
 
   return $ T.concat
     [ header
+    , speakerSection
     , cleanedSection
     , todosSection
     , originalSection

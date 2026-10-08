@@ -3,8 +3,13 @@
 
 module STT.Whisper
   ( TranscriptionResult(..)
+  , PromptOptions(..)
+  , WhisperCppResponse(..)
+  , TranscriptSegment(..)
+  , ResultInfo(..)
   , transcribeFile
   , transcribeFileWithConfig
+  , transcribeFileWithPrompt
   ) where
 
 import Data.Aeson (FromJSON(..), parseJSON, withObject, (.:), (.:?), decode)
@@ -23,6 +28,7 @@ data TranscriptionResult = TranscriptionResult
   , transLanguage :: !(Maybe Text)
   , transDuration :: !(Maybe Double)
   , transTranslation :: !(Maybe Text)
+  , transSegments :: ![TranscriptSegment]
   } deriving (Show, Eq, Generic)
 
 -- | JSON response from whisper.cpp
@@ -31,9 +37,13 @@ data WhisperCppResponse = WhisperCppResponse
   , resultInfo :: !(Maybe ResultInfo)
   } deriving (Show, Generic)
 
-newtype TranscriptSegment = TranscriptSegment
-  { segmentText :: Text
-  } deriving (Show, Generic)
+-- | A single transcription segment; offsets are milliseconds from the
+-- start of the audio and absent in JSON emitted by older whisper.cpp builds
+data TranscriptSegment = TranscriptSegment
+  { segmentText :: !Text
+  , segmentFromMs :: !(Maybe Int)
+  , segmentToMs :: !(Maybe Int)
+  } deriving (Show, Eq, Generic)
 
 newtype ResultInfo = ResultInfo
   { detectedLanguage :: Maybe Text
@@ -45,8 +55,14 @@ instance FromJSON WhisperCppResponse where
     <*> v .:? "result"
 
 instance FromJSON TranscriptSegment where
-  parseJSON = withObject "TranscriptSegment" $ \v -> TranscriptSegment
-    <$> v .: "text"
+  parseJSON = withObject "TranscriptSegment" $ \v -> do
+    text <- v .: "text"
+    maybeOffsets <- v .:? "offsets"
+    (fromMs, toMs) <- case maybeOffsets of
+      Nothing -> return (Nothing, Nothing)
+      Just offsets -> flip (withObject "offsets") offsets $ \o ->
+        (,) <$> (Just <$> o .: "from") <*> (Just <$> o .: "to")
+    return $ TranscriptSegment text fromMs toMs
 
 instance FromJSON ResultInfo where
   parseJSON = withObject "ResultInfo" $ \v -> ResultInfo
@@ -54,31 +70,46 @@ instance FromJSON ResultInfo where
 
 -- | Transcribe audio file using configuration
 transcribeFileWithConfig :: AppConfig -> FilePath -> IO (Either String TranscriptionResult)
-transcribeFileWithConfig config audioPath = do
+transcribeFileWithConfig config = transcribeFileWithPrompt config Nothing
+
+-- | Transcribe audio file using configuration, with an optional initial
+-- prompt to bias recognition (e.g. towards technical vocabulary)
+transcribeFileWithPrompt :: AppConfig -> Maybe Text -> FilePath -> IO (Either String TranscriptionResult)
+transcribeFileWithPrompt config initialPrompt audioPath = do
   deviceStr <- Config.getDeviceString (device config)
   let modelSizeStr = modelSizeToString (modelSize config)
       taskMode = task config
       langStr = maybe "auto" T.unpack (language config)
+      prompt = PromptOptions initialPrompt (whisperCarryPrompt config)
+      -- Speaker alignment needs fine-grained segment timestamps; whisper
+      -- sometimes emits sentence-spanning segments (especially for languages
+      -- without word spacing), which caps how many speakers can be told apart
+      fineSegments = diarizationEnabled config
 
-  transcribeFile audioPath modelSizeStr deviceStr langStr taskMode
+  transcribeFile audioPath modelSizeStr deviceStr langStr prompt fineSegments taskMode
+
+-- | Initial prompt for whisper and whether to re-inject it every window
+data PromptOptions = PromptOptions !(Maybe Text) !Bool
 
 -- | Transcribe audio file with explicit parameters
 transcribeFile
-  :: FilePath     -- ^ Path to audio file
-  -> String       -- ^ Model size (tiny, base, small, medium, large)
-  -> String       -- ^ Device (cpu, cuda)
-  -> String       -- ^ Language (auto or language code)
-  -> Task         -- ^ Task mode
+  :: FilePath       -- ^ Path to audio file
+  -> String         -- ^ Model size (tiny, base, small, medium, large)
+  -> String         -- ^ Device (cpu, cuda)
+  -> String         -- ^ Language (auto or language code)
+  -> PromptOptions  -- ^ Initial prompt settings
+  -> Bool           -- ^ Split output into fine-grained segments (for diarization)
+  -> Task           -- ^ Task mode
   -> IO (Either String TranscriptionResult)
-transcribeFile audioPath modelSz dev lang taskMode =
+transcribeFile audioPath modelSz dev lang prompt fineSegments taskMode =
   case taskMode of
-    Transcribe -> transcribeOnly audioPath modelSz dev lang False
-    Translate -> transcribeOnly audioPath modelSz dev lang True
-    Both -> transcribeBoth audioPath modelSz dev lang
+    Transcribe -> transcribeOnly audioPath modelSz dev lang prompt fineSegments False
+    Translate -> transcribeOnly audioPath modelSz dev lang prompt fineSegments True
+    Both -> transcribeBoth audioPath modelSz dev lang prompt fineSegments
 
 -- | Transcribe only (with optional translation)
-transcribeOnly :: FilePath -> String -> String -> String -> Bool -> IO (Either String TranscriptionResult)
-transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
+transcribeOnly :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> Bool -> IO (Either String TranscriptionResult)
+transcribeOnly audioPath modelSz _dev lang (PromptOptions initialPrompt carryPrompt) fineSegments shouldTranslate = do
   let modelPath = "whisper.cpp/models/ggml-" ++ modelSz ++ ".bin"
       jsonOutputPath = audioPath ++ ".json"
       baseArgs = [ "-m", modelPath
@@ -86,9 +117,17 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
                  , "-l", lang
                  , "-oj"  -- Output JSON to file
                  ]
-      args = if shouldTranslate
-             then baseArgs ++ ["--translate"]
-             else baseArgs
+      promptArgs = case initialPrompt of
+        Nothing -> []
+        Just p -> ["--prompt", T.unpack p]
+                  ++ ["--carry-initial-prompt" | carryPrompt]
+      -- -ml caps segment length (in tokens); segments are re-merged per
+      -- speaker turn later, so short segments never surface to the user
+      segmentArgs = if fineSegments then ["-ml", "24"] else []
+      args = baseArgs
+             ++ promptArgs
+             ++ segmentArgs
+             ++ ["--translate" | shouldTranslate]
 
   -- Execute whisper.cpp
   (exitCode, stdout, stderr) <- readProcessWithExitCode "whisper.cpp/build/bin/whisper-cli" args ""
@@ -110,18 +149,19 @@ transcribeOnly audioPath modelSz _dev lang shouldTranslate = do
             , transLanguage = lang
             , transDuration = Nothing  -- whisper.cpp doesn't provide total duration easily
             , transTranslation = Nothing
+            , transSegments = transcription resp
             }
 
 -- | Transcribe and translate (both modes)
-transcribeBoth :: FilePath -> String -> String -> String -> IO (Either String TranscriptionResult)
-transcribeBoth audioPath modelSz dev lang = do
+transcribeBoth :: FilePath -> String -> String -> String -> PromptOptions -> Bool -> IO (Either String TranscriptionResult)
+transcribeBoth audioPath modelSz dev lang prompt fineSegments = do
   -- First, transcribe
-  transResult <- transcribeOnly audioPath modelSz dev lang False
+  transResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments False
   case transResult of
     Left err -> return $ Left err
     Right trans -> do
       -- Then, translate
-      translateResult <- transcribeOnly audioPath modelSz dev lang True
+      translateResult <- transcribeOnly audioPath modelSz dev lang prompt fineSegments True
       case translateResult of
         Left err -> return $ Left err
         Right translation ->
