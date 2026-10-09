@@ -185,7 +185,7 @@ The application presents an interactive menu:
    - Same for the post-processing model (any instruct GGUF)
 
 7. Toggle speaker diarization
-   - Label transcript turns per speaker (on by default)
+   - Label transcript turns per speaker (off by default; auto-detected speaker counts are unreliable on a single noisy microphone)
 
 8. Clean transcription file
    - Fix grammar and punctuation using LLM

@@ -161,7 +161,7 @@ defaultAppConfig = AppConfig
   , vocabFilePath = Nothing
   , whisperCarryPrompt = True
   -- Diarization defaults
-  , diarizationEnabled = True
+  , diarizationEnabled = False
   , diarizeBinaryPath = "sherpa-onnx/build/bin/sherpa-onnx-offline-speaker-diarization"
   , diarizeSegModelPath = "sherpa-onnx/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
   , diarizeEmbModelPath = "sherpa-onnx/models/wespeaker_en_voxceleb_CAM++.onnx"
