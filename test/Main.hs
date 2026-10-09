@@ -5,10 +5,15 @@ module Main (main) where
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (Arbitrary(..), elements)
+import Control.Exception (finally)
 import qualified Data.Text as T
 import Data.Aeson (decode)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import Data.List (nub)
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (openBinaryTempFile, hClose)
+import STT.Audio (fixWavHeader, locateDataChunk, peakDbfs)
 import STT.Config
 import STT.Diarize
 import STT.LLM (extractReply, parseRoleSuggestions)
@@ -29,20 +34,85 @@ tests = testGroup "Whisper-HS Tests"
   , diarizationTests
   , roleSuggestionTests
   , vocabTests
+  , audioTests
   ]
+
+-- | WAV header repair and level measurement
+audioTests :: TestTree
+audioTests = testGroup "Audio / WAV"
+  [ testCase "locateDataChunk finds the canonical 44-byte header" $
+      locateDataChunk (wavHeader 1000) @?= Just 44
+  , testCase "locateDataChunk skips extra chunks" $
+      locateDataChunk (BS.concat ["RIFF", le32 100, "WAVE", "LIST", le32 4, "abcd", "data", le32 0])
+        @?= Just 32
+  , testCase "locateDataChunk rejects non-WAV data" $
+      locateDataChunk "not a wav file at all" @?= Nothing
+  , testCase "fixWavHeader repairs the sizes of an interrupted recording" $
+      withTempWav (wavHeader 172800000 <> BS.replicate 8 0) $ \path -> do
+        fixWavHeader path
+        fixed <- BS.readFile path
+        BS.take 4 (BS.drop 4 fixed) @?= le32 (BS.length fixed - 8)
+        BS.take 4 (BS.drop 40 fixed) @?= le32 8
+  , testCase "peakDbfs reports digital silence as -96 dBFS" $
+      withTempWav (wavHeader 8 <> BS.replicate 8 0) $ \path ->
+        peakDbfs path >>= (@?= Just (-96))
+  , testCase "peakDbfs reports a half-scale sample near -6 dBFS" $
+      withTempWav (wavHeader 4 <> BS.pack [0, 0, 0, 0x40]) $ \path -> do
+        level <- peakDbfs path
+        case level of
+          Just db -> assertBool ("got " ++ show db) (abs (db + 6.02) < 0.1)
+          Nothing -> assertFailure "no level measured"
+  ]
+
+-- | A 16-bit mono 16 kHz WAV header claiming the given data size
+wavHeader :: Int -> BS.ByteString
+wavHeader dataSize = BS.concat
+  [ "RIFF", le32 (36 + dataSize), "WAVE"
+  , "fmt ", le32 16, le16 1, le16 1, le32 16000, le32 32000, le16 2, le16 16
+  , "data", le32 dataSize
+  ]
+
+le32 :: Int -> BS.ByteString
+le32 v = BS.pack [fromIntegral (v `div` 256 ^ i `mod` 256) | i <- [0 .. 3 :: Int]]
+
+le16 :: Int -> BS.ByteString
+le16 v = BS.pack [fromIntegral (v `div` 256 ^ i `mod` 256) | i <- [0 .. 1 :: Int]]
+
+withTempWav :: BS.ByteString -> (FilePath -> IO a) -> IO a
+withTempWav bytes action = do
+  dir <- getTemporaryDirectory
+  (path, h) <- openBinaryTempFile dir "whisper-hs-test.wav"
+  BS.hPut h bytes
+  hClose h
+  action path `finally` removeFile path
 
 -- | Test configuration parsers
 configParserTests :: TestTree
 configParserTests = testGroup "Config Parsers"
-  [ testGroup "parseModelSize"
-      [ testCase "parses 'tiny'" $
-          parseModelSize "tiny" @?= Just Tiny
-      , testCase "parses 'base'" $
-          parseModelSize "base" @?= Just Base
-      , testCase "parses 'SMALL' (case insensitive)" $
-          parseModelSize "SMALL" @?= Just Small
-      , testCase "rejects invalid" $
-          parseModelSize "invalid" @?= Nothing
+  [ testGroup "parseWhisperModel"
+      [ testCase "accepts a bare model name" $
+          parseWhisperModel "base" @?= Just "base"
+      , testCase "lower-cases names (release files are lower-case)" $
+          parseWhisperModel "Large-V3-Turbo" @?= Just "large-v3-turbo"
+      , testCase "accepts quantization suffixes" $
+          parseWhisperModel "large-v3-turbo-q5_0" @?= Just "large-v3-turbo-q5_0"
+      , testCase "keeps paths verbatim, including case" $
+          parseWhisperModel "/Models/My-Model.bin" @?= Just "/Models/My-Model.bin"
+      , testCase "rejects empty" $
+          parseWhisperModel "" @?= Nothing
+      , testCase "rejects whitespace" $
+          parseWhisperModel "large v3" @?= Nothing
+      ]
+
+  , testGroup "isLanguageCode"
+      [ testCase "accepts ISO codes" $
+          assertBool "en, de, yue" (all isLanguageCode ["en", "de", "yue"])
+      , testCase "accepts whisper's English names" $
+          assertBool "english" (isLanguageCode "english")
+      , testCase "rejects glibc locale strings" $
+          assertBool "en_US:en, de_DE.UTF-8, C" (not (any isLanguageCode ["en_US:en", "de_DE.UTF-8", "C"]))
+      , testCase "rejects empty" $
+          isLanguageCode "" @?= False
       ]
 
   , testGroup "parseDevice"
@@ -223,6 +293,41 @@ diarizationTests = testGroup "Diarization"
           map stSpeaker (assignSpeakers intervals segments) @?= ["Speaker 1"]
       ]
 
+  , testGroup "smoothShortTurns"
+      [ testCase "a short turn between two turns of one speaker is absorbed" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 10 "Long."
+            , SpeakerTurn "B" 10 10.8 "Glitch."
+            , SpeakerTurn "A" 10.8 20 "Long again."
+            ]) @?= ["A", "A", "A"]
+      , testCase "a short opening turn joins the long turn after it" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "B" 0 0.9 "Uh."
+            , SpeakerTurn "A" 0.9 12 "Long."
+            ]) @?= ["A", "A"]
+      , testCase "a short turn between two different speakers is kept" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 10 "Long."
+            , SpeakerTurn "C" 10 10.8 "Yes."
+            , SpeakerTurn "B" 10.8 20 "Long."
+            ]) @?= ["A", "C", "B"]
+      , testCase "long turns are untouched" $
+          map stSpeaker (smoothShortTurns 1.5
+            [ SpeakerTurn "A" 0 5 "One.", SpeakerTurn "B" 5 10 "Two.", SpeakerTurn "A" 10 15 "Three." ])
+            @?= ["A", "B", "A"]
+      , testCase "assignSpeakers merges a glitch so the phantom speaker disappears" $ do
+          let intervals = [ SpeakerInterval 0 10 "speaker_00"
+                          , SpeakerInterval 10 10.8 "speaker_01"
+                          , SpeakerInterval 10.8 20 "speaker_00"
+                          ]
+              segments = [ seg " First part." 0 10000
+                         , seg " glitch" 10000 10800
+                         , seg " second part." 10800 20000
+                         ]
+          assignSpeakers intervals segments
+            @?= [SpeakerTurn "Speaker 1" 0 20 "First part. glitch second part."]
+      ]
+
   , testGroup "renderSpeakerTurns"
       [ testCase "applies confirmed roles, keeping labels without one" $ do
           let turns = [ SpeakerTurn "Speaker 1" 0 5 "Hello."
@@ -295,6 +400,12 @@ roleSuggestionTests = testGroup "Role Suggestions"
         @?= [("Speaker 1", "Bob")]
   , testCase "drops empty roles" $
       parseRoleSuggestions ["Speaker 1"] "Speaker 1:  " @?= []
+  , testCase "drops sentence-length roles (echoed transcript)" $
+      parseRoleSuggestions ["Speaker 1"]
+        "Speaker 1: And so my fellow Americans ask not what your country can do for you."
+        @?= []
+  , testCase "strips trailing punctuation from roles" $
+      parseRoleSuggestions ["Speaker 1"] "Speaker 1: Project lead." @?= [("Speaker 1", "Project lead")]
   ]
 
 -- | Sanity checks on the curated LLM registry
@@ -313,6 +424,22 @@ modelRegistryTests = testGroup "Model Registry"
   , testCase "default setup model is in the registry" $
       assertBool "tinyllama present"
         (any (("tinyllama-1.1b-chat.gguf" ==) . Models.modelFile) Models.knownModels)
+  , testCase "whisper keys are unique" $
+      length (nub (map Models.modelKey Models.knownWhisperModels))
+        @?= length Models.knownWhisperModels
+  , testCase "whisper URLs are https" $
+      assertBool "all https"
+        (all (("https://" ==) . take 8 . Models.modelUrl) Models.knownWhisperModels)
+  , testCase "whisper names resolve to their registry files" $
+      assertBool "resolveWhisperModel matches modelPath"
+        (all (\m -> Models.resolveWhisperModel (Models.modelKey m) == Models.modelPath m)
+             Models.knownWhisperModels)
+  , testCase "default whisper model is in the registry" $
+      assertBool "base present" (any (("base" ==) . Models.modelKey) Models.knownWhisperModels)
+  , testCase "resolveWhisperModel keeps explicit paths" $
+      Models.resolveWhisperModel "/tmp/custom.bin" @?= "/tmp/custom.bin"
+  , testCase "resolveWhisperModel treats .bin names as files" $
+      Models.resolveWhisperModel "ggml-custom.bin" @?= "ggml-custom.bin"
   ]
 
 -- | Test extraction of the assistant reply from llama-cli stdout
@@ -354,9 +481,6 @@ extractReplyTests = testGroup "extractReply"
   ]
 
 -- | Property-based tests
-instance Arbitrary ModelSize where
-  arbitrary = elements [Tiny, Base, Small, Medium, Large]
-
 instance Arbitrary Device where
   arbitrary = elements [Auto, CPU, CUDA]
 

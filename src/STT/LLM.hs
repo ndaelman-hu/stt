@@ -125,15 +125,21 @@ suggestSpeakerRoles llamaBin modelPath speakers transcript = do
   return $ fmap (parseRoleSuggestions speakers) result
 
 -- | Extract "Speaker N: role" pairs from LLM output, tolerating noise;
--- only lines matching a known speaker label are kept
+-- only lines matching a known speaker label are kept, and only when the
+-- role looks like a label (small models sometimes echo the transcript line)
 parseRoleSuggestions :: [Text] -> Text -> [(Text, Text)]
 parseRoleSuggestions speakers output =
   [ (speaker, role)
   | line <- map T.strip (T.lines output)
   , speaker <- take 1 [ s | s <- speakers, (s <> ":") `T.isPrefixOf` line ]
-  , let role = T.strip (T.drop (T.length speaker + 1) line)
-  , not (T.null role)
+  , let role = T.dropWhileEnd (`elem` (".;,!" :: String)) (T.strip (T.drop (T.length speaker + 1) line))
+  , isPlausibleRole role
   ]
+
+-- | A role or name is a few words, not a sentence
+isPlausibleRole :: Text -> Bool
+isPlausibleRole role =
+  not (T.null role) && T.length role <= 40 && length (T.words role) <= 5
 
 -- | Extract TODO items from meeting transcript
 extractTodos :: FilePath -> FilePath -> Text -> IO (Either String Text)

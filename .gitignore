@@ -54,5 +54,10 @@ cabal.project.local~
 .stack-work/
 
 # External dependencies (built locally)
-llama.cpp/
-whisper.cpp/
+llama.cpp
+whisper.cpp
+
+# Nix dev shell (direnv)
+.direnv/
+# Diarization build and models (setup.sh)
+sherpa-onnx

@@ -9,6 +9,8 @@ module STT.Diarize
   , runDiarization
   , parseDiarizationOutput
   , assignSpeakers
+  , smoothShortTurns
+  , minTurnSeconds
   , renderSpeakerTurns
   , speakerLabels
   ) where
@@ -91,12 +93,12 @@ parseDiarizationOutput = concatMap parseLine . T.lines
       _ -> []
 
 -- | Assign a speaker to each transcript segment by maximal temporal overlap
--- with the diarization intervals, then merge consecutive same-speaker
--- segments into turns. Raw labels are normalized to "Speaker 1", "Speaker 2",
--- ... in order of first appearance.
+-- with the diarization intervals, merge consecutive same-speaker segments
+-- into turns, absorb implausibly short turns into their neighbours, and
+-- normalize labels to "Speaker 1", "Speaker 2", ... in order of appearance.
 assignSpeakers :: [SpeakerInterval] -> [TranscriptSegment] -> [SpeakerTurn]
 assignSpeakers intervals segments =
-  mergeTurns $ normalizeLabels $ go Nothing segments
+  normalizeLabels $ mergeAdjacent $ smoothShortTurns minTurnSeconds $ mergeAdjacent $ toTurns $ go Nothing segments
   where
     go _ [] = []
     go prevSpeaker (seg:rest) =
@@ -123,19 +125,47 @@ assignSpeakers intervals segments =
            _ | all ((<= 0) . snd) bySpeaker -> siSpeaker nearest
              | otherwise -> fst (maximumBy (comparing snd) bySpeaker)
 
-    normalizeLabels labeled =
-      let order = nub (map fst labeled)
-          rename raw = "Speaker " <> T.pack (show (1 + fromMaybe 0 (lookup raw (zip order [0 :: Int ..]))))
-      in [ (rename raw, seg) | (raw, seg) <- labeled ]
+    toTurns labeled =
+      [ SpeakerTurn speaker startS endS (T.strip (segmentText seg))
+      | (speaker, seg) <- labeled
+      , let startS = maybe 0 ((/ 1000) . fromIntegral) (segmentFromMs seg)
+            endS = maybe startS ((/ 1000) . fromIntegral) (segmentToMs seg)
+      ]
 
-    mergeTurns [] = []
-    mergeTurns ((speaker, seg):rest) =
-      let (same, others) = span ((== speaker) . fst) rest
-          run = seg : map snd same
-          startS = maybe 0 ((/ 1000) . fromIntegral) (segmentFromMs seg)
-          endS = maybe startS ((/ 1000) . fromIntegral) (segmentToMs (last run))
-          text = T.strip $ T.intercalate " " (map (T.strip . segmentText) run)
-      in SpeakerTurn speaker startS endS text : mergeTurns others
+    normalizeLabels turns =
+      let order = nub (map stSpeaker turns)
+          rename raw = "Speaker " <> T.pack (show (1 + fromMaybe 0 (lookup raw (zip order [0 :: Int ..]))))
+      in [ t { stSpeaker = rename (stSpeaker t) } | t <- turns ]
+
+-- | Merge consecutive turns of the same speaker
+mergeAdjacent :: [SpeakerTurn] -> [SpeakerTurn]
+mergeAdjacent [] = []
+mergeAdjacent (t:rest) =
+  let (same, others) = span ((== stSpeaker t) . stSpeaker) rest
+      run = t : same
+      text = T.strip $ T.intercalate " " (filter (not . T.null) (map stText run))
+  in SpeakerTurn (stSpeaker t) (stStart t) (stEnd (last run)) text : mergeAdjacent others
+
+-- | Turns shorter than this are treated as clustering glitches, not speaker
+-- changes: a real interjection between two other turns rarely lasts less
+minTurnSeconds :: Double
+minTurnSeconds = 1.5
+
+-- | Relabel short turns to a neighbouring speaker: a short turn between two
+-- turns of the same speaker belongs to that speaker, and a short turn at the
+-- start or end of the recording belongs to the long turn next to it. Turns
+-- that are not short, and lone turns, are left alone.
+smoothShortTurns :: Double -> [SpeakerTurn] -> [SpeakerTurn]
+smoothShortTurns minLen turns = zipWith3 relabel (Nothing : map Just turns) turns (map Just (drop 1 turns) ++ [Nothing])
+  where
+    isShort t = stEnd t - stStart t < minLen
+    relabel prev t next
+      | not (isShort t) = t
+      | otherwise = case (prev, next) of
+          (Just p, Just n) | stSpeaker p == stSpeaker n -> t { stSpeaker = stSpeaker p }
+          (Nothing, Just n) | not (isShort n) -> t { stSpeaker = stSpeaker n }
+          (Just p, Nothing) | not (isShort p) -> t { stSpeaker = stSpeaker p }
+          _ -> t
 
 -- | Normalized speaker labels present in a set of turns, in order of appearance
 speakerLabels :: [SpeakerTurn] -> [Text]

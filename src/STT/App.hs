@@ -8,7 +8,9 @@ module STT.App
   , extractTodosMenu
   ) where
 
-import Control.Monad (forever, when, unless)
+import Control.Monad (forever, when, unless, void)
+import Data.Char (toLower)
+import Data.List (find)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -55,16 +57,17 @@ runApp initialConfig = do
     putStrLn "Configuration:"
     putStrLn "  3. List audio devices"
     putStrLn "  4. Change language settings"
-    putStrLn "  5. Change LLM model"
-    putStrLn "  6. Toggle speaker diarization"
+    putStrLn "  5. Change Whisper model"
+    putStrLn "  6. Change LLM model"
+    putStrLn "  7. Toggle speaker diarization"
     putStrLn ""
     putStrLn "Post-Processing:"
-    putStrLn "  7. Clean transcription file"
-    putStrLn "  8. Extract TODOs from file"
+    putStrLn "  8. Clean transcription file"
+    putStrLn "  9. Extract TODOs from file"
     putStrLn ""
-    putStrLn "  9. Quit"
+    putStrLn "  10. Quit"
     putStrLn ""
-    putStr "Choose an option (1-9): "
+    putStr "Choose an option (1-10): "
     hFlush stdout
 
     choice <- getLine
@@ -75,24 +78,27 @@ runApp initialConfig = do
     case choice of
       "1" -> recordAndTranscribeMenu config
       "2" -> transcribeExistingMenu config
-      "3" -> listDevicesMenu
+      "3" -> listDevicesMenu config
       "4" -> changeLanguageMenu configRef
-      "5" -> changeLlmModelMenu configRef
-      "6" -> toggleDiarizationMenu configRef
-      "7" -> cleanTranscriptionMenu config
-      "8" -> extractTodosMenu config
-      "9" -> do
+      "5" -> changeWhisperModelMenu configRef
+      "6" -> changeLlmModelMenu configRef
+      "7" -> toggleDiarizationMenu configRef
+      "8" -> cleanTranscriptionMenu config
+      "9" -> extractTodosMenu config
+      "10" -> do
         putStrLn "Goodbye!"
         exitSuccess
-      _ -> putStrLn "Invalid choice. Please choose 1-9."
+      _ -> putStrLn "Invalid choice. Please choose 1-10."
 
 -- | Print current configuration
 printConfig :: AppConfig -> IO ()
 printConfig config = do
-  deviceStr <- Config.getDeviceString (device config)
   putStrLn "Current Configuration:"
-  putStrLn $ "  Model: " ++ show (modelSize config)
-  putStrLn $ "  Device: " ++ deviceStr
+  whisperInstalled <- doesFileExist (Models.resolveWhisperModel (whisperModel config))
+  putStrLn $ "  Whisper Model: " ++ whisperModel config
+          ++ (if whisperInstalled then "" else " [not installed]")
+  putStrLn $ "  Whisper Threads: " ++ maybe "auto" show (whisperThreads config)
+  putStrLn $ "  Compute Device: " ++ map toLower (show (device config))
   putStrLn $ "  Sample Rate: " ++ show (Config.unSampleRate $ sampleRate config) ++ " Hz"
   putStrLn $ "  Max Duration: " ++ show (Config.unMinutes $ maxDurationMinutes config) ++ " minutes"
   putStrLn $ "  Stop Signal: " ++ show (stopSignal config)
@@ -114,13 +120,13 @@ recordAndTranscribeMenu config = do
                  then Nothing
                  else readMaybe durationInput
 
-  putStr "Device ID (press Enter for default): "
+  putStr "Input device (Enter for default; an id or name from \"List audio devices\"): "
   hFlush stdout
   deviceInput <- getLine
 
   let deviceId = if null deviceInput
                  then Nothing
-                 else readMaybe deviceInput
+                 else Just deviceInput
 
   sessionContext <- promptSessionContext config deviceId
 
@@ -139,19 +145,22 @@ transcribeExistingMenu config = do
   transcribeExistingFile config sessionContext filePath
 
 -- | Menu for listing devices
-listDevicesMenu :: IO ()
-listDevicesMenu = do
-  putStrLn "Available audio devices:"
-  devices <- Audio.listAudioDevices
+listDevicesMenu :: AppConfig -> IO ()
+listDevicesMenu config = do
+  backend <- Audio.detectBackend config
+  putStrLn $ "Audio backend: " ++ Audio.backendName backend
+  putStrLn "Available input devices:"
+  devices <- Audio.listAudioDevices backend
   if null devices
-    then putStrLn "No devices found or arecord not available."
+    then putStrLn "No devices found."
     else mapM_ printDevice devices
   where
     printDevice dev =
-      putStrLn $ "  " ++ show (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
+      putStrLn $ "  " ++ T.unpack (Audio.deviceId dev) ++ ": " ++ T.unpack (Audio.deviceName dev)
+              ++ (if Audio.deviceIsDefault dev then " [default]" else "")
 
 -- | Record audio and transcribe it
-recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe Int -> Maybe T.Text -> IO ()
+recordAndTranscribe :: AppConfig -> Maybe Int -> Maybe String -> Maybe T.Text -> IO ()
 recordAndTranscribe config duration deviceId sessionContext = do
   -- Record audio
   maybeAudioPath <- Audio.recordAudio config duration deviceId
@@ -291,32 +300,70 @@ extractTodosMenu config = do
       TIO.putStrLn todos
       putStrLn "========================================="
 
+-- | Menu for choosing (and if necessary downloading) the whisper model.
+-- Quality is mostly decided here: large-v3-turbo is the recommended
+-- step up from the base model setup.sh installs.
+changeWhisperModelMenu :: IORef AppConfig -> IO ()
+changeWhisperModelMenu = modelChooserMenu ModelChooser
+  { chooserTitle = "Whisper model"
+  , chooserRegistry = Models.knownWhisperModels
+  , chooserCustomHint = "any whisper.cpp GGML model"
+  , chooserCurrent = Models.resolveWhisperModel . whisperModel
+  , chooserValue = Models.modelKey
+  , chooserSet = \value config -> config { whisperModel = value }
+  }
+
 -- | Menu for choosing (and if necessary downloading) the LLM model used
 -- for post-processing. Any instruct GGUF works; the curated list covers
 -- the speed/quality range for CPU inference.
 changeLlmModelMenu :: IORef AppConfig -> IO ()
-changeLlmModelMenu configRef = do
+changeLlmModelMenu = modelChooserMenu ModelChooser
+  { chooserTitle = "LLM model"
+  , chooserRegistry = Models.knownModels
+  , chooserCustomHint = "any instruct GGUF"
+  , chooserCurrent = llmModelPath
+  , chooserValue = Models.modelPath
+  , chooserSet = \value config -> config { llmModelPath = value }
+  }
+
+-- | What the shared model chooser needs to know about one engine
+data ModelChooser = ModelChooser
+  { chooserTitle :: String                       -- ^ shown in prompts, e.g. "Whisper model"
+  , chooserRegistry :: [Models.ModelSpec]        -- ^ curated models to offer
+  , chooserCustomHint :: String                  -- ^ what a typed path may point at
+  , chooserCurrent :: AppConfig -> FilePath      -- ^ file the current setting resolves to
+  , chooserValue :: Models.ModelSpec -> String   -- ^ config value to store for a registry pick
+  , chooserSet :: String -> AppConfig -> AppConfig
+  }
+
+-- | List curated models with install/current markers, download the chosen
+-- one if needed, or accept a path to a custom model file
+modelChooserMenu :: ModelChooser -> IORef AppConfig -> IO ()
+modelChooserMenu chooser configRef = do
   config <- readIORef configRef
 
-  putStrLn $ "Current LLM model: " ++ llmModelPath config
+  putStrLn $ "Current " ++ chooserTitle chooser ++ ": " ++ chooserCurrent chooser config
   putStrLn ""
   putStrLn "Available models:"
-  mapM_ (printModel config) (zip [1 :: Int ..] Models.knownModels)
+  mapM_ (printModel config) numbered
   putStrLn ""
-  putStr "Choose a model number, or type a path to any instruct GGUF (Enter to keep current): "
+  putStr $ "Choose a model number, or type a path to " ++ chooserCustomHint chooser
+        ++ " (Enter to keep current): "
   hFlush stdout
 
   input <- getLine
   case input of
-    "" -> putStrLn "LLM model unchanged."
+    "" -> putStrLn $ chooserTitle chooser ++ " unchanged."
     _ | Just n <- readMaybe input :: Maybe Int
-      , Just spec <- lookup n (zip [1 ..] Models.knownModels) -> selectModel spec
+      , Just spec <- lookup n numbered -> selectModel spec
       | otherwise -> selectPath input
   where
+    numbered = zip [1 :: Int ..] (chooserRegistry chooser)
+
     printModel config (n, spec) = do
       installed <- Models.isInstalled spec
       let markers = concat
-            [ if Models.modelPath spec == llmModelPath config then " [current]" else ""
+            [ if Models.modelPath spec == chooserCurrent chooser config then " [current]" else ""
             , if installed then " [installed]" else ""
             ]
       putStrLn $ "  " ++ show n ++ ". " ++ Models.modelLabel spec
@@ -326,33 +373,20 @@ changeLlmModelMenu configRef = do
 
     selectModel spec = do
       installed <- Models.isInstalled spec
-      if installed
-        then setModelPath (Models.modelPath spec)
-        else do
-          putStr $ "Download " ++ Models.modelLabel spec
-                ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
-                ++ ")? (Enter to download, anything else cancels): "
-          hFlush stdout
-          answer <- getLine
-          if null answer
-            then do
-              result <- Models.downloadModel spec
-              case result of
-                Left err -> putStrLn err
-                Right path -> setModelPath path
-            else putStrLn "Download cancelled."
+      ready <- if installed then return True else promptDownload spec
+      when ready $ setValue (chooserValue chooser spec)
 
     selectPath path = do
       exists <- doesFileExist path
       if exists
-        then setModelPath path
+        then setValue path
         else putStrLn $ "File not found: " ++ path
 
-    setModelPath path = do
+    setValue value = do
       config <- readIORef configRef
-      let newConfig = config { llmModelPath = path }
+      let newConfig = chooserSet chooser value config
       writeIORef configRef newConfig
-      putStrLn $ "LLM model changed to: " ++ path
+      putStrLn $ chooserTitle chooser ++ " changed to: " ++ value
       putStrLn ""
       putStrLn "Updated configuration:"
       printConfig newConfig
@@ -364,7 +398,7 @@ buildPromptFromConfig config sessionContext = do
 
 -- | Optionally collect a session context before recording: a sentence or two
 -- describing the topic and expected jargon, either typed or dictated
-promptSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+promptSessionContext :: AppConfig -> Maybe String -> IO (Maybe T.Text)
 promptSessionContext config deviceId = do
   putStrLn ""
   putStrLn "Session context (biases recognition of names and technical terms):"
@@ -385,7 +419,7 @@ promptSessionContext config deviceId = do
     _ -> return Nothing
 
 -- | Record a short snippet, transcribe it, and use the text as session context
-dictateSessionContext :: AppConfig -> Maybe Int -> IO (Maybe T.Text)
+dictateSessionContext :: AppConfig -> Maybe String -> IO (Maybe T.Text)
 dictateSessionContext config deviceId = do
   putStrLn "Recording context (up to 20 seconds)..."
   maybeAudioPath <- Audio.recordAudio config (Just 20) deviceId
@@ -427,6 +461,7 @@ removeIfExists path = do
 -- the user, then display and save the speaker-labeled transcript
 diarizeAndDisplay :: AppConfig -> FilePath -> Whisper.TranscriptionResult -> IO ()
 diarizeAndDisplay config audioPath transcription = do
+  ensureEmbeddingModel config
   available <- Diarize.checkDiarizationAvailable config
   case available of
     Left hint -> putStrLn hint
@@ -479,6 +514,34 @@ diarizeAndDisplay config audioPath transcription = do
                 }
           Markdown.saveMeetingMinutes outputPath processedResult
 
+-- | Offer to download the configured speaker-embedding model when it is one
+-- of the curated ones and not installed yet
+ensureEmbeddingModel :: AppConfig -> IO ()
+ensureEmbeddingModel config =
+  case find ((== diarizeEmbModelPath config) . Models.modelPath) Models.knownDiarizationModels of
+    Nothing -> return ()
+    Just spec -> do
+      installed <- Models.isInstalled spec
+      unless installed $ do
+        putStrLn $ "Speaker embedding model not installed: " ++ Models.modelPath spec
+        void (promptDownload spec)
+
+-- | Ask before downloading a model; True when it is installed afterwards
+promptDownload :: Models.ModelSpec -> IO Bool
+promptDownload spec = do
+  putStr $ "Download " ++ Models.modelLabel spec
+        ++ " (" ++ Models.formatSize (Models.modelSizeMB spec)
+        ++ ")? (Enter to download, anything else cancels): "
+  hFlush stdout
+  answer <- getLine
+  if null answer
+    then do
+      result <- Models.downloadModel spec
+      case result of
+        Left err -> putStrLn err >> return False
+        Right _ -> return True
+    else putStrLn "Download cancelled." >> return False
+
 -- | Ask the user to confirm or override each suggested speaker role
 confirmRoles :: [T.Text] -> [(T.Text, T.Text)] -> [Diarize.SpeakerTurn] -> IO [(T.Text, T.Text)]
 confirmRoles speakers suggestions turns = do
@@ -511,6 +574,7 @@ toggleDiarizationMenu configRef = do
       newConfig = config { diarizationEnabled = newEnabled }
 
   when newEnabled $ do
+    ensureEmbeddingModel config
     available <- Diarize.checkDiarizationAvailable config
     case available of
       Left hint -> putStrLn hint

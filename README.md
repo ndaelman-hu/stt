@@ -5,8 +5,8 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 ## Features
 
 ### Core Transcription
-- **Real-time audio recording** with multiple microphone support
-- **Configurable stop signals**: Ctrl+C, Enter, or Space
+- **Real-time audio recording** via PipeWire (`pw-record`) or ALSA (`arecord`), with a silence check
+- **Configurable stop signals**: Enter (default), Space, or Ctrl+C
 - **Multiple transcription modes**:
   - Transcribe (keep original language)
   - Translate (translate to English)
@@ -30,7 +30,22 @@ A Haskell implementation of the real-time speech-to-text transcription applicati
 - **whisper.cpp**: C++ implementation of Whisper (no Python needed!)
 - **arecord**: ALSA audio recording tool (Linux)
 
-### Quick Setup (Recommended)
+### Nix Dev Shell (Recommended)
+
+With Nix installed, the flake provides GHC, Cabal and prebuilt whisper.cpp
+(with Vulkan GPU support), llama.cpp and sherpa-onnx, so only the models
+need downloading:
+
+```bash
+nix develop              # or `direnv allow` once, then the shell loads on cd
+cp .env.example .env
+cabal run whisper-hs     # pick a whisper model under "Change Whisper model"
+```
+
+The shell exports the engine binary paths, which override the `.env`
+values. Recording still uses the host's `arecord`.
+
+### Quick Setup (Without Nix)
 
 Run the automated setup script:
 ```bash
@@ -99,8 +114,12 @@ This will:
 Create a `.env` file in the project root (or copy from `.env.example`):
 
 ```bash
-# Whisper model size: tiny, base, small, medium, large
-MODEL_SIZE=base
+# Whisper model: a whisper.cpp model name (base, small, medium,
+# large-v3-turbo, large-v3, ...) or a path to any GGML model file
+WHISPER_MODEL=base
+
+# CPU threads for whisper (unset: all but two logical processors)
+# WHISPER_THREADS=8
 
 # Compute device: auto, cpu, cuda
 DEVICE=auto
@@ -112,7 +131,7 @@ SAMPLE_RATE=16000
 MAX_DURATION_MINUTES=90
 
 # Stop signal: ctrl_c, enter, space
-STOP_SIGNAL=ctrl_c
+STOP_SIGNAL=enter
 
 # Language code (leave empty for auto-detection)
 # Examples: en, es, fr, de, ja, zh
@@ -152,17 +171,31 @@ The application presents an interactive menu:
    - Supports: WAV, MP3, M4A, FLAC, OGG, Opus, WebM, MP4
 
 3. List audio devices
-   - Shows available microphones
+   - Shows the capture backend (PipeWire or ALSA), its microphones and the default
+   - Pass an id or name from this list as the input device when recording
 
-4. Clean transcription file
+4. Change language settings
+   - Fix the spoken language or return to auto-detection
+
+5. Change Whisper model
+   - Pick a curated model (downloads it if missing) or point at any GGML file
+   - large-v3-turbo is the recommended step up from base
+
+6. Change LLM model
+   - Same for the post-processing model (any instruct GGUF)
+
+7. Toggle speaker diarization
+   - Label transcript turns per speaker (off by default; auto-detected speaker counts are unreliable on a single noisy microphone)
+
+8. Clean transcription file
    - Fix grammar and punctuation using LLM
    - Outputs cleaned version to new file
 
-5. Extract TODOs from file
+9. Extract TODOs from file
    - Extract action items from meeting transcript
    - Generates markdown meeting minutes with TODO list
 
-6. Quit
+10. Quit
 ```
 
 ### Recording Options
@@ -176,7 +209,7 @@ Duration in seconds: 10
 ```
 Duration in seconds: [press Enter]
 ```
-Then press your configured stop signal (Ctrl+C, Enter, or Space).
+Then press your configured stop signal (Enter by default; Space or Ctrl+C if configured).
 
 ### Example Workflow
 
@@ -189,13 +222,21 @@ Then press your configured stop signal (Ctrl+C, Enter, or Space).
 
 ## Configuration Options
 
-### Model Sizes
+### Whisper Models
 
-- `tiny`: Fastest, lowest accuracy (~1GB RAM)
-- `base`: Good balance (~1GB RAM)
-- `small`: Better accuracy (~2GB RAM)
-- `medium`: High accuracy (~5GB RAM)
-- `large`: Best accuracy (~10GB RAM)
+`WHISPER_MODEL` takes any whisper.cpp model name, resolved to
+`whisper.cpp/models/ggml-<name>.bin`, or a path to a GGML file. The
+"Change Whisper model" menu lists and downloads these curated options:
+
+- `base`: Fastest, lowest accuracy (0.1 GB; what `setup.sh` installs)
+- `small`: Clearly better than base, still quick (0.5 GB)
+- `medium`: High accuracy but slow on CPU (1.4 GB)
+- `large-v3-turbo-q5_0`: Quantized turbo, near-turbo quality (0.5 GB)
+- `large-v3-turbo`: **Recommended.** large-v3 quality at a fraction of its cost (1.5 GB)
+- `large-v3`: Best accuracy, several times slower than turbo (2.9 GB)
+
+Whisper uses all but two logical processors by default; override with
+`WHISPER_THREADS`.
 
 ### Device Options
 
@@ -211,8 +252,8 @@ Then press your configured stop signal (Ctrl+C, Enter, or Space).
 
 ### Stop Signals
 
-- `ctrl_c`: Press Ctrl+C to stop (traditional)
-- `enter`: Press Enter to stop (convenient)
+- `ctrl_c`: Press Ctrl+C to stop
+- `enter`: Press Enter to stop (default)
 - `space`: Press Space to stop (quick)
 
 ## Architecture
